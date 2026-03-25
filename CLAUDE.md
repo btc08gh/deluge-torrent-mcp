@@ -2,7 +2,9 @@
 
 ## Project Overview
 
-Uses the [Model Context Protocol Rust SDK](https://github.com/modelcontextprotocol/rust-sdk) to create a simple command-line application that interacts with the Model Context Protocol (MCP) to manage torrent files. The application will allow users to add, list, and remove torrents using MCP.
+An MCP server written in Rust that bridges AI assistants to a running Deluge torrent daemon (`deluged`). Built with the [Model Context Protocol Rust SDK](https://github.com/modelcontextprotocol/rust-sdk), it exposes 13 tools covering torrent management (add, remove, list, pause, resume, status), file operations (move storage, rename folders/files, force recheck), and server queries (free space, path size).
+
+Supports both **stdio** (Claude Desktop) and **HTTP/SSE** (remote/agentic) transports. Includes tiered safety gates to guard against LLM hallucination, and configurable TLS certificate handling for Deluge's default self-signed certificates.
 
 ## Tech Stack
 Rust for the code
@@ -23,7 +25,7 @@ Cargo for package management and build system
 | `thiserror` | Structured error types |
 | `tracing` | Logging |
 | `tracing-subscriber` | Log output formatting — **must be configured to write to stderr or a file, never stdout**. Any output on stdout corrupts the JSON-RPC framing used by the MCP stdio transport. |
-| `clap` | CLI args (Deluge host/port/credentials, transport selection, `--allow-risky`, `--allow-destructive`) |
+| `clap` | CLI args (Deluge host/port/credentials, transport selection, `--allow-risky`, `--allow-destructive`) — credentials can also be supplied via environment variables (`DELUGE_HOST`, `DELUGE_PORT`, `DELUGE_USERNAME`, `DELUGE_PASSWORD`) |
 
 rencode serialization is implemented internally as `src/rencode.rs` rather than using a third-party crate.
 
@@ -71,6 +73,8 @@ Tools are grouped into three tiers to guard against LLM hallucination:
 | **Always enabled** | none | `add_torrent`, `list_torrents`, `get_torrent_status`, `pause_torrent`, `resume_torrent`, `set_torrent_options`, `get_free_space`, `get_path_size` |
 | **Risky** | `--allow-risky` | `move_storage`, `rename_folder`, `rename_files`, `force_recheck` |
 | **Destructive** | `--allow-destructive` | `remove_torrent` |
+
+`--allow-destructive` implicitly enables `--allow-risky`.
 
 When a gated tool is called without the required flag, the server returns an error to the LLM describing which flag to pass to enable it.
 
