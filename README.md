@@ -60,7 +60,7 @@ deluge-torrent-mcp --host 192.168.1.50 --port 58846 -u admin -p secret [OPTIONS]
 
 | Flag | Env Variable | Default | Description |
 |---|---|---|---|
-| `--host <HOST>` | `DELUGE_HOST` | `127.0.0.1` | Deluge daemon hostname or IP |
+| `--host <HOST>` | `DELUGE_HOST` | `127.0.0.1` | Deluge daemon hostname or IP (IPv6: bare address, e.g. `::1`) |
 | `--port <PORT>` | `DELUGE_PORT` | `58846` | Deluge RPC port |
 | `-u, --username <USER>` | `DELUGE_USERNAME` | — | Deluge RPC username |
 | `-p, --password <PASS>` | `DELUGE_PASSWORD` | — | Deluge RPC password |
@@ -69,7 +69,7 @@ deluge-torrent-mcp --host 192.168.1.50 --port 58846 -u admin -p secret [OPTIONS]
 | `--list-tools` | — | off | Print all tools with their default enabled/disabled state and exit |
 | `--cert-fingerprint <SHA256>` | — | — | Pin the Deluge TLS certificate by fingerprint |
 | `--transport <stdio\|http>` | — | `stdio` | MCP transport to use |
-| `--http-bind <ADDR>` | — | `0.0.0.0:8080` | Bind address for HTTP transport |
+| `--http-bind <ADDR>` | — | `0.0.0.0:8080` | Bind address for HTTP transport (IPv6: bracket notation, e.g. `[::]:8080`) |
 | `--api-token <TOKEN>` | `DELUGE_API_TOKEN` | — | Bearer token required for HTTP requests |
 | `--test-connection` | — | off | Connect, print session status, and exit |
 
