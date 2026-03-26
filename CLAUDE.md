@@ -29,7 +29,7 @@ Cargo for package management and build system
 | `tower-http` | CORS and tracing middleware layers for axum |
 | `tracing` | Logging |
 | `tracing-subscriber` | Log output formatting — **must be configured to write to stderr or a file, never stdout**. Any output on stdout corrupts the JSON-RPC framing used by the MCP stdio transport. |
-| `clap` | CLI args (Deluge host/port/credentials, transport selection, `--allow-risky`, `--allow-destructive`, `--api-token`, `--http-bind`, `--test-connection`) — credentials can also be supplied via environment variables (`DELUGE_HOST`, `DELUGE_PORT`, `DELUGE_USERNAME`, `DELUGE_PASSWORD`, `DELUGE_API_TOKEN`) |
+| `clap` | CLI args (Deluge host/port/credentials, transport selection, `--enable-tool`, `--disable-tool`, `--list-tools`, `--api-token`, `--http-bind`, `--test-connection`) — credentials can also be supplied via environment variables (`DELUGE_HOST`, `DELUGE_PORT`, `DELUGE_USERNAME`, `DELUGE_PASSWORD`, `DELUGE_API_TOKEN`) |
 
 rencode serialization is implemented internally as `src/rencode.rs` rather than using a third-party crate.
 
@@ -70,17 +70,19 @@ Torrents are identified by their **info hash** (40-character hex string).
 
 ### Safety Gates
 
-Tools are grouped into three tiers to guard against LLM hallucination:
+Tools have two default states. Five tools are **disabled by default** to guard against LLM hallucination:
 
-| Tier | Flag required | Tools |
+| Tool | Default | Reason |
 |---|---|---|
-| **Always enabled** | none | `add_torrent`, `list_torrents`, `get_torrent_status`, `pause_torrent`, `resume_torrent`, `set_torrent_options`, `get_free_space`, `get_path_size` |
-| **Risky** | `--allow-risky` | `move_storage`, `rename_folder`, `rename_files`, `force_recheck` |
-| **Destructive** | `--allow-destructive` | `remove_torrent` |
+| `add_torrent`, `list_torrents`, `get_torrent_status`, `pause_torrent`, `resume_torrent`, `set_torrent_options`, `get_free_space`, `get_path_size` | enabled | Safe read/write operations |
+| `move_storage`, `rename_folder`, `rename_files`, `force_recheck` | disabled | Modifies filesystem paths or interrupts downloads |
+| `remove_torrent` | disabled | Can permanently delete downloaded data |
 
-`--allow-destructive` implicitly enables `--allow-risky`.
+Tools are enabled or disabled via `--enable-tool <PATTERN>` / `--disable-tool <PATTERN>`. Patterns are matched as case-sensitive substrings of tool names (minimum 3 characters). Both singular (`--enable-tool`) and plural (`--enable-tools`) forms are accepted. Flags are processed in CLI order — later flags override earlier ones.
 
-When a gated tool is called without the required flag, the server returns an error to the LLM describing which flag to pass to enable it.
+`--list-tools` prints all tools with their default state and exits without requiring credentials.
+
+When a disabled tool is called, the server returns an error to the LLM with the exact `--enable-tool` flag needed to enable it.
 
 ### Wire Format
 

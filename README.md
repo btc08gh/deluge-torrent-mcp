@@ -7,7 +7,7 @@ By integrating this server, your AI assistant can seamlessly manage your torrent
 ## Features
 
 - **Native RPC Integration**: Uses Deluge's native binary protocol (rencode/zlib over TLS) rather than relying on the WebUI API.
-- **Tiered Safety Gates**: Prevents LLM hallucinations from accidentally deleting or moving your files by requiring explicit CLI opt-ins for risky commands.
+- **Granular Safety Gates**: Prevents LLM hallucinations from accidentally deleting or moving your files. Risky tools are disabled by default and enabled individually via `--enable-tool`.
 - **Flexible TLS Handling**: Seamlessly handles Deluge's default self-signed certificates with a secure, copy-paste pinning mechanism.
 - **Dual Transports**: Supports stdio (for local Claude Desktop use) and HTTP/SSE (for remote agentic frameworks).
 
@@ -64,28 +64,52 @@ deluge-torrent-mcp --host 192.168.1.50 --port 58846 -u admin -p secret [OPTIONS]
 | `--port <PORT>` | `DELUGE_PORT` | `58846` | Deluge RPC port |
 | `-u, --username <USER>` | `DELUGE_USERNAME` | — | Deluge RPC username |
 | `-p, --password <PASS>` | `DELUGE_PASSWORD` | — | Deluge RPC password |
-| `--allow-risky` | — | off | Enable risky tools (move, rename, recheck) |
-| `--allow-destructive` | — | off | Enable `remove_torrent`; implies `--allow-risky` |
+| `--enable-tool <PATTERN>` | — | — | Enable tools matching pattern (min 3 chars, substring match). Repeatable, comma-separated |
+| `--disable-tool <PATTERN>` | — | — | Disable tools matching pattern. Flags are processed in order; last wins |
+| `--list-tools` | — | off | Print all tools with their default enabled/disabled state and exit |
 | `--cert-fingerprint <SHA256>` | — | — | Pin the Deluge TLS certificate by fingerprint |
 | `--transport <stdio\|http>` | — | `stdio` | MCP transport to use |
 | `--http-bind <ADDR>` | — | `0.0.0.0:8080` | Bind address for HTTP transport |
 | `--api-token <TOKEN>` | `DELUGE_API_TOKEN` | — | Bearer token required for HTTP requests |
-| `--test-connection` | — | off | Connect, list torrents, print output, and exit |
+| `--test-connection` | — | off | Connect, print session status, and exit |
 
 > Prefer environment variables over CLI flags for credentials to avoid passwords appearing in shell history.
 
 ## Safety Gates
 
-By default, the server runs in **Safe Mode**. The AI can list, add, pause, and resume torrents, but cannot alter the filesystem. To enable advanced capabilities, pass these flags explicitly:
+By default, the server runs in **Safe Mode** — the AI can list, add, pause, and resume torrents, but cannot alter the filesystem or remove torrents. Five tools are disabled by default:
 
-- `--allow-risky`: Enables `move_storage`, `rename_folder`, `rename_files`, and `force_recheck`.
-- `--allow-destructive`: Enables `remove_torrent` (which can permanently delete downloaded data). Implicitly enables `--allow-risky`.
+| Tool | Reason |
+|---|---|
+| `move_storage` | Moves files on disk |
+| `rename_folder` | Modifies filesystem paths |
+| `rename_files` | Modifies filesystem paths |
+| `force_recheck` | Interrupts active downloads |
+| `remove_torrent` | Can permanently delete downloaded data |
 
-Example for full access:
+Use `--list-tools` to see the full list and current defaults:
 
 ```bash
-deluge-torrent-mcp -u admin -p secret --allow-destructive
+deluge-torrent-mcp --list-tools
 ```
+
+Enable tools by name or substring pattern (minimum 3 characters). Flags are processed in order — later flags override earlier ones:
+
+```bash
+# Enable a single tool
+deluge-torrent-mcp -u admin -p secret --enable-tool move_storage
+
+# Enable multiple tools
+deluge-torrent-mcp -u admin -p secret --enable-tools=move_storage,rename_folder,rename_files
+
+# Enable all five disabled-by-default tools
+deluge-torrent-mcp -u admin -p secret --enable-tools=move_storage,rename_folder,rename_files,force_recheck,remove_torrent
+
+# Enable all storage tools, then selectively disable remove
+deluge-torrent-mcp -u admin -p secret --enable-tools=move_storage,rename_folder,rename_files,force_recheck,remove_torrent --disable-tool remove_torrent
+```
+
+When a disabled tool is called, the server returns an error to the AI describing the exact flag needed to enable it.
 
 ## HTTP Transport
 
