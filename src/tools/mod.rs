@@ -143,9 +143,15 @@ impl DelugeServer {
                 .call("core.add_torrent_url", vec![Value::String(url), opts], vec![])
                 .await
         } else if let Some(path) = p.file_path {
+            if std::path::Path::new(&path)
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
+            {
+                return Err("file_path must not contain '..' components".to_string());
+            }
             let bytes = tokio::fs::read(&path)
                 .await
-                .map_err(|e| format!("Failed to read file '{path}': {e}"))?;
+                .map_err(|e| format!("Failed to read file: {e}"))?;
             let encoded = BASE64.encode(&bytes);
             let filename = std::path::Path::new(&path)
                 .file_name()
