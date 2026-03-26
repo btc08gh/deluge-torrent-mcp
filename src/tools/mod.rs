@@ -135,6 +135,9 @@ impl DelugeServer {
         let opts = Value::Dict(vec![]);
 
         let result = if let Some(uri) = p.magnet_link {
+            if !uri.starts_with("magnet:") {
+                return Err("magnet_link must start with 'magnet:'".to_string());
+            }
             self.client
                 .call("core.add_torrent_magnet", vec![Value::String(uri), opts], vec![])
                 .await
