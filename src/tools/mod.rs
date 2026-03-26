@@ -182,7 +182,7 @@ impl DelugeServer {
             .map_err(|e| e.to_string())
     }
 
-    /// Remove a torrent. Disabled by default; enable with --enable=remove_torrent.
+    /// Remove a torrent. Disabled by default; enable with --enable-tool=remove_torrent.
     #[tool]
     async fn remove_torrent(
         &self,
@@ -327,7 +327,7 @@ impl DelugeServer {
             .map_err(|e| e.to_string())
     }
 
-    /// Move a torrent's storage to a new path. Disabled by default; enable with --enable=move_storage.
+    /// Move a torrent's storage to a new path. Disabled by default; enable with --enable-tool=move_storage.
     #[tool]
     async fn move_storage(
         &self,
@@ -348,7 +348,7 @@ impl DelugeServer {
             .map_err(|e| e.to_string())
     }
 
-    /// Rename a folder within a torrent. Disabled by default; enable with --enable=rename_folder.
+    /// Rename a folder within a torrent. Disabled by default; enable with --enable-tool=rename_folder.
     #[tool]
     async fn rename_folder(
         &self,
@@ -375,7 +375,7 @@ impl DelugeServer {
             .map_err(|e| e.to_string())
     }
 
-    /// Rename one or more files within a torrent. Disabled by default; enable with --enable=rename_files.
+    /// Rename one or more files within a torrent. Disabled by default; enable with --enable-tool=rename_files.
     #[tool]
     async fn rename_files(
         &self,
@@ -404,7 +404,7 @@ impl DelugeServer {
             .map_err(|e| e.to_string())
     }
 
-    /// Force a hash recheck of a torrent's files. Disabled by default; enable with --enable=force_recheck.
+    /// Force a hash recheck of a torrent's files. Disabled by default; enable with --enable-tool=force_recheck.
     #[tool]
     async fn force_recheck(
         &self,
