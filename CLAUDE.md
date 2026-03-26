@@ -16,16 +16,20 @@ Cargo for package management and build system
 |---|---|
 | `rmcp` | Official MCP Rust SDK — stdio and HTTP/SSE transports |
 | `tokio` | Async runtime |
-| `tokio-rustls` | TLS over TCP for Deluge RPC connection |
-| `rustls` | TLS implementation |
+| `native-tls` | TLS for Deluge RPC connection — tolerates Deluge's legacy v1 self-signed certificates that rustls rejects |
+| `tokio-native-tls` | Async wrapper for native-tls |
 | `bytes` | Byte buffer handling for binary protocol framing |
 | `flate2` | zlib compression/decompression for Deluge RPC message bodies |
 | `serde` | Serialization framework |
 | `base64` | Encode .torrent file content for `add_torrent_file` |
+| `sha2` | SHA-256 hashing for TLS certificate fingerprint computation |
+| `anyhow` | Flexible error handling |
 | `thiserror` | Structured error types |
+| `axum` | HTTP server for the HTTP/SSE transport |
+| `tower-http` | CORS and tracing middleware layers for axum |
 | `tracing` | Logging |
 | `tracing-subscriber` | Log output formatting — **must be configured to write to stderr or a file, never stdout**. Any output on stdout corrupts the JSON-RPC framing used by the MCP stdio transport. |
-| `clap` | CLI args (Deluge host/port/credentials, transport selection, `--allow-risky`, `--allow-destructive`) — credentials can also be supplied via environment variables (`DELUGE_HOST`, `DELUGE_PORT`, `DELUGE_USERNAME`, `DELUGE_PASSWORD`) |
+| `clap` | CLI args (Deluge host/port/credentials, transport selection, `--allow-risky`, `--allow-destructive`, `--api-token`, `--http-bind`, `--test-connection`) — credentials can also be supplied via environment variables (`DELUGE_HOST`, `DELUGE_PORT`, `DELUGE_USERNAME`, `DELUGE_PASSWORD`, `DELUGE_API_TOKEN`) |
 
 rencode serialization is implemented internally as `src/rencode.rs` rather than using a third-party crate.
 
@@ -39,7 +43,7 @@ MCP Client (Claude Desktop, agentic frameworks, etc.) <--MCP--> deluge-torrent-m
 
 The server supports two MCP transports:
 - **stdio** — for local use with Claude Desktop and similar clients
-- **HTTP/SSE** — for remote use with network-accessible clients
+- **HTTP/SSE** — for remote use with network-accessible clients; MCP clients connect to `http://<host>:<port>/mcp`. Protected by optional Bearer token authentication (`--api-token`).
 
 ### Deluge RPC API
 Deluge exposes a custom binary RPC protocol over TCP (default port 58846). The daemon must be running and accessible. Authentication is required before issuing commands. The API is documented at https://deluge.readthedocs.io/en/deluge-2.0.1/reference/api.html
@@ -104,7 +108,7 @@ Deluge daemons use self-signed certificates by default. Certificate verification
 - **Default (skip verification)**: Accepts any certificate. On each connection, logs the certificate's SHA-256 fingerprint at `WARN` level along with the `--cert-fingerprint` flag to use for pinning, making it easy to copy-paste for future use.
 - **Pinned fingerprint** (`--cert-fingerprint <SHA256>`): Accepts only a certificate matching the given fingerprint. All others are rejected.
 
-Implemented via a custom `rustls::client::ServerCertVerifier`.
+Implemented via `native-tls` with `danger_accept_invalid_certs(true)`. After the TLS handshake, the peer certificate is extracted via `peer_certificate()`, its DER bytes are hashed with SHA-256, and the fingerprint is either verified against the pinned value or logged as a WARN with the copy-pasteable `--cert-fingerprint` flag.
 
 ## File Structure
 
@@ -113,10 +117,10 @@ Implemented via a custom `rustls::client::ServerCertVerifier`.
 | `Cargo.toml` | The manifest file that defines dependencies, metadata, and crate type. |
 | `Cargo.lock` | Contains the exact dependency versions used in the last build. |
 | `src/` | Contains all the source code for the project. |
-| `src/main.rs` | Entry point — CLI arg parsing, transport selection, server startup. |
+| `src/main.rs` | Entry point — CLI arg parsing, transport selection, server startup, HTTP auth middleware. |
 | `src/rencode.rs` | Internal rencode serializer/deserializer (Deluge wire format). |
-| `src/deluge/` | Deluge RPC client — connection, auth, and method wrappers. |
-| `src/tools/` | MCP tool implementations (one file per tool or logical group). |
+| `src/deluge/mod.rs` | Deluge RPC client — TLS connection, cert fingerprint logging/pinning, auth, request multiplexing, zlib framing. |
+| `src/tools/mod.rs` | MCP tool implementations — all 13 tools, safety gate helpers, Value→JSON conversion. |
 | `tests/` | Integration tests. |
 
 ## Commands
