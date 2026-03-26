@@ -337,6 +337,40 @@ fn decode_from(data: &[u8], pos: usize) -> Result<(Value, usize), RencodeError> 
 }
 
 // ---------------------------------------------------------------------------
+// JSON conversion
+// ---------------------------------------------------------------------------
+
+/// Convert a rencode [`Value`] to a [`serde_json::Value`].
+/// Dict keys that are not strings are rendered via their `Debug` representation.
+/// Binary byte sequences are base64-encoded.
+pub fn value_to_json(v: Value) -> serde_json::Value {
+    use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+    match v {
+        Value::None => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(b),
+        Value::Int(n) => serde_json::Value::Number(n.into()),
+        Value::Float32(f) => serde_json::json!(f),
+        Value::Float64(f) => serde_json::json!(f),
+        Value::String(s) => serde_json::Value::String(s),
+        Value::Bytes(b) => serde_json::Value::String(BASE64.encode(b)),
+        Value::List(items) => {
+            serde_json::Value::Array(items.into_iter().map(value_to_json).collect())
+        }
+        Value::Dict(pairs) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in pairs {
+                let key = match k {
+                    Value::String(s) => s,
+                    other => format!("{other:?}"),
+                };
+                map.insert(key, value_to_json(v));
+            }
+            serde_json::Value::Object(map)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

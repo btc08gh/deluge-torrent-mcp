@@ -485,37 +485,11 @@ impl DelugeServer {
     }
 
     fn value_to_string(v: Value) -> String {
-        serde_json::to_string_pretty(&Self::value_to_json(v)).unwrap_or_default()
+        serde_json::to_string_pretty(&crate::rencode::value_to_json(v)).unwrap_or_default()
     }
 
     fn value_to_json_string(v: Value) -> String {
-        serde_json::to_string_pretty(&Self::value_to_json(v)).unwrap_or_default()
-    }
-
-    fn value_to_json(v: Value) -> serde_json::Value {
-        match v {
-            Value::None => serde_json::Value::Null,
-            Value::Bool(b) => serde_json::Value::Bool(b),
-            Value::Int(n) => serde_json::Value::Number(n.into()),
-            Value::Float32(f) => serde_json::json!(f),
-            Value::Float64(f) => serde_json::json!(f),
-            Value::String(s) => serde_json::Value::String(s),
-            Value::Bytes(b) => serde_json::Value::String(BASE64.encode(b)),
-            Value::List(items) => {
-                serde_json::Value::Array(items.into_iter().map(Self::value_to_json).collect())
-            }
-            Value::Dict(pairs) => {
-                let mut map = serde_json::Map::new();
-                for (k, v) in pairs {
-                    let key = match k {
-                        Value::String(s) => s,
-                        other => format!("{other:?}"),
-                    };
-                    map.insert(key, Self::value_to_json(v));
-                }
-                serde_json::Value::Object(map)
-            }
-        }
+        serde_json::to_string_pretty(&crate::rencode::value_to_json(v)).unwrap_or_default()
     }
 }
 

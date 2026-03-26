@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use rmcp::ServiceExt;
+use serde_json;
 use tracing::info;
 
 mod deluge;
@@ -98,17 +99,30 @@ async fn main() -> anyhow::Result<()> {
 
     if cli.test_connection {
         use crate::rencode::Value;
+
+        // daemon.info — returns a string describing the daemon build
+        let info = client.call("daemon.info", vec![], vec![]).await?;
+        eprintln!("daemon.info: {}", match &info {
+            Value::String(s) => s.as_str(),
+            _ => "(unexpected type)",
+        });
+
+        // core.get_session_status — terse session health snapshot
         let keys = Value::List(vec![
-            Value::String("name".into()),
-            Value::String("state".into()),
-            Value::String("progress".into()),
-            Value::String("total_size".into()),
-            Value::String("save_path".into()),
+            Value::String("upload_rate".into()),
+            Value::String("download_rate".into()),
+            Value::String("total_upload".into()),
+            Value::String("total_download".into()),
+            Value::String("num_peers".into()),
+            Value::String("dht_nodes".into()),
         ]);
-        let result = client
-            .call("core.get_torrents_status", vec![Value::Dict(vec![]), keys], vec![])
+        let status = client
+            .call("core.get_session_status", vec![keys], vec![])
             .await?;
-        eprintln!("{result:#?}");
+        let json = serde_json::to_string_pretty(&crate::rencode::value_to_json(status))
+            .unwrap_or_default();
+        eprintln!("core.get_session_status:\n{json}");
+
         return Ok(());
     }
 
