@@ -16,7 +16,7 @@ By integrating this server, your AI assistant can seamlessly manage your torrent
 Ensure you have Rust and Cargo installed, then build the release binary:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/sandymac/deluge-torrent-mcp.git
 cd deluge-torrent-mcp
 cargo build --release
 ```
