@@ -189,6 +189,7 @@ impl DelugeServer {
         Parameters(p): Parameters<RemoveTorrentParams>,
     ) -> Result<String, String> {
         self.tool_gate("remove_torrent")?;
+        Self::validate_info_hash(&p.info_hash)?;
         self.client
             .call(
                 "core.remove_torrent",
@@ -239,6 +240,7 @@ impl DelugeServer {
         &self,
         Parameters(p): Parameters<TorrentIdParams>,
     ) -> Result<String, String> {
+        Self::validate_info_hash(&p.info_hash)?;
         self.client
             .call(
                 "core.get_torrent_status",
@@ -256,6 +258,7 @@ impl DelugeServer {
         &self,
         Parameters(p): Parameters<TorrentIdParams>,
     ) -> Result<String, String> {
+        Self::validate_info_hash(&p.info_hash)?;
         self.client
             .call("core.pause_torrent", vec![Value::String(p.info_hash.clone())], vec![])
             .await
@@ -269,6 +272,7 @@ impl DelugeServer {
         &self,
         Parameters(p): Parameters<TorrentIdParams>,
     ) -> Result<String, String> {
+        Self::validate_info_hash(&p.info_hash)?;
         self.client
             .call("core.resume_torrent", vec![Value::String(p.info_hash.clone())], vec![])
             .await
@@ -282,6 +286,7 @@ impl DelugeServer {
         &self,
         Parameters(p): Parameters<SetOptionsParams>,
     ) -> Result<String, String> {
+        Self::validate_info_hash(&p.info_hash)?;
         let mut opts: Vec<(Value, Value)> = vec![];
         if let Some(v) = p.max_download_speed {
             opts.push((Value::String("max_download_speed".into()), Value::Float64(v)));
@@ -334,6 +339,7 @@ impl DelugeServer {
         Parameters(p): Parameters<MoveStorageParams>,
     ) -> Result<String, String> {
         self.tool_gate("move_storage")?;
+        Self::validate_info_hash(&p.info_hash)?;
         self.client
             .call(
                 "core.move_storage",
@@ -355,6 +361,7 @@ impl DelugeServer {
         Parameters(p): Parameters<RenameFolderParams>,
     ) -> Result<String, String> {
         self.tool_gate("rename_folder")?;
+        Self::validate_info_hash(&p.info_hash)?;
         self.client
             .call(
                 "core.rename_folder",
@@ -382,6 +389,7 @@ impl DelugeServer {
         Parameters(p): Parameters<RenameFilesParams>,
     ) -> Result<String, String> {
         self.tool_gate("rename_files")?;
+        Self::validate_info_hash(&p.info_hash)?;
         let renames = Value::List(
             p.renames
                 .iter()
@@ -411,6 +419,7 @@ impl DelugeServer {
         Parameters(p): Parameters<TorrentIdParams>,
     ) -> Result<String, String> {
         self.tool_gate("force_recheck")?;
+        Self::validate_info_hash(&p.info_hash)?;
         self.client
             .call(
                 "core.force_recheck",
@@ -473,6 +482,18 @@ impl DelugeServer {
                 "Tool '{tool_name}' is disabled. Use --enable-tool={tool_name} to enable it."
             ))
         }
+    }
+
+    /// Validate a torrent info hash — 40 hex chars (v1/SHA-1) or 64 hex chars (v2/SHA-256).
+    fn validate_info_hash(hash: &str) -> Result<(), String> {
+        let valid_len = hash.len() == 40 || hash.len() == 64;
+        let valid_hex = hash.bytes().all(|b| b.is_ascii_hexdigit());
+        if !valid_len || !valid_hex {
+            return Err(format!(
+                "invalid info_hash '{hash}': must be 40 hex characters (v1) or 64 hex characters (v2)"
+            ));
+        }
+        Ok(())
     }
 
     fn value_to_string(v: Value) -> String {
