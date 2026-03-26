@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -30,8 +30,11 @@ const MAX_DECOMPRESSED_BYTES: usize = MAX_FRAME_BYTES * 4; // 128 MB decompresse
 
 type PendingMap = Mutex<HashMap<i64, oneshot::Sender<Result<Value>>>>;
 
-/// Active TLS connection state — writer half and pending response map.
+/// Active TLS connection state — writer half, pending response map, and generation counter.
+/// The generation is used by the read loop cleanup task to avoid nulling out a newer connection
+/// that was established after this one died.
 struct LiveConn {
+    generation: u64,
     writer: WriteHalf<TlsStream<TcpStream>>,
     pending: Arc<PendingMap>,
 }
@@ -47,6 +50,7 @@ pub struct DelugeClient {
     // None when disconnected; reconnected lazily on next call()
     conn: Arc<AsyncMutex<Option<LiveConn>>>,
     next_id: AtomicI64,
+    next_generation: AtomicU64,
 }
 
 impl DelugeClient {
@@ -69,6 +73,7 @@ impl DelugeClient {
             password: password.to_string(),
             conn: Arc::new(AsyncMutex::new(None)),
             next_id: AtomicI64::new(1),
+            next_generation: AtomicU64::new(1),
         });
 
         let (live_conn, auth_level) = client.try_connect_and_login().await?;
@@ -161,6 +166,10 @@ impl DelugeClient {
         let (reader, mut writer) = tokio::io::split(tls);
         let pending: Arc<PendingMap> = Arc::new(Mutex::new(HashMap::new()));
 
+        // Stamp this connection with a unique generation so the cleanup task
+        // can avoid nulling out a newer connection established after this one died.
+        let generation = self.next_generation.fetch_add(1, Ordering::SeqCst);
+
         // Spawn read loop. On termination, drain pending requests with an error
         // and mark the connection as dead so the next call() triggers reconnect.
         let conn_ref = self.conn.clone();
@@ -172,7 +181,12 @@ impl DelugeClient {
             for (_, tx) in pending_for_loop.lock().unwrap().drain() {
                 let _ = tx.send(Err(anyhow!("connection lost")));
             }
-            *conn_ref.lock().await = None;
+            // Only null out conn if it still holds this generation — a newer
+            // connection may have already been established.
+            let mut guard = conn_ref.lock().await;
+            if guard.as_ref().map(|c| c.generation) == Some(generation) {
+                *guard = None;
+            }
         });
 
         // Login directly — can't use self.call() here because the conn lock
@@ -199,7 +213,7 @@ impl DelugeClient {
             other => bail!("unexpected login result: {other:?}"),
         };
 
-        Ok((LiveConn { writer, pending }, auth_level))
+        Ok((LiveConn { generation, writer, pending }, auth_level))
     }
 
     /// Retry `try_connect_and_login` with exponential backoff.
