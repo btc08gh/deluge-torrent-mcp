@@ -142,6 +142,9 @@ impl DelugeServer {
                 .call("core.add_torrent_magnet", vec![Value::String(uri), opts], vec![])
                 .await
         } else if let Some(url) = p.url {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err("url must start with 'http://' or 'https://'".to_string());
+            }
             self.client
                 .call("core.add_torrent_url", vec![Value::String(url), opts], vec![])
                 .await
