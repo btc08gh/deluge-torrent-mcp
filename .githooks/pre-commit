@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Regenerate THIRD_PARTY_LICENSES.html if Cargo.toml or Cargo.lock are staged.
+if git diff --cached --name-only | grep -qE '^Cargo\.(toml|lock)$'; then
+    echo "Dependencies changed — regenerating THIRD_PARTY_LICENSES.html..."
+    cargo about generate --all-features about.hbs -o THIRD_PARTY_LICENSES.html
+    git add THIRD_PARTY_LICENSES.html
+fi
