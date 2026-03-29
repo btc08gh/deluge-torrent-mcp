@@ -1,5 +1,7 @@
 # Deluge Torrent MCP Server
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A Model Context Protocol (MCP) server written in Rust that bridges AI assistants (like Claude) to a Deluge torrent daemon (`deluged`).
 
 By integrating this server, your AI assistant can seamlessly manage your torrents — adding, pausing, listing, checking statuses, and managing files — all over Deluge's native TCP RPC protocol.
@@ -169,3 +171,9 @@ Run `docker-compose up -d`, check `./test-config/auth` for the generated credent
 ## Note on Logging
 
 All tracing logs are directed to stderr. Do not print to stdout (`println!`), as MCP uses stdout for JSON-RPC framing. Any stray standard output will break the connection with the MCP client.
+
+## License
+
+Copyright (c) 2026 Sandy McArthur, Jr.
+
+This project is licensed under the [MIT License](LICENSE). Third-party dependency licenses are listed in [THIRD_PARTY_LICENSES.html](THIRD_PARTY_LICENSES.html).
