@@ -9,7 +9,7 @@ use rmcp::{
     handler::server::router::tool::ToolRouter,
     handler::server::tool::ToolCallContext,
     handler::server::wrapper::Parameters,
-    model::{CallToolRequestParams, CallToolResult, Implementation, ListToolsResult,
+    model::{CallToolRequestParams, CallToolResult, Icon, Implementation, ListToolsResult,
             PaginatedRequestParams, ServerInfo, Tool},
     schemars,
     serde_json,
@@ -17,6 +17,10 @@ use rmcp::{
     tool, tool_router,
     ErrorData, RoleServer,
 };
+
+const ICON_SVG: &[u8] = include_bytes!("../../assets/deluge-mcp-icon.svg");
+const ICON_48: &[u8] = include_bytes!("../../assets/deluge-mcp-icon-48x48.png");
+const ICON_96: &[u8] = include_bytes!("../../assets/deluge-mcp-icon-96x96.png");
 use serde::Deserialize;
 
 use crate::deluge::DelugeClient;
@@ -675,10 +679,22 @@ impl DelugeServer {
 
 impl ServerHandler for DelugeServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::default().with_server_info(Implementation::new(
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_PKG_VERSION"),
-        ))
+        let icons = vec![
+            Icon::new(format!("data:image/svg+xml;base64,{}", BASE64.encode(ICON_SVG)))
+                .with_mime_type("image/svg+xml")
+                .with_sizes(vec!["any".to_string()]),
+            Icon::new(format!("data:image/png;base64,{}", BASE64.encode(ICON_48)))
+                .with_mime_type("image/png")
+                .with_sizes(vec!["48x48".to_string()]),
+            Icon::new(format!("data:image/png;base64,{}", BASE64.encode(ICON_96)))
+                .with_mime_type("image/png")
+                .with_sizes(vec!["96x96".to_string()]),
+        ];
+        ServerInfo::new(rmcp::model::ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(
+                Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+                    .with_icons(icons),
+            )
     }
 
     async fn list_tools(

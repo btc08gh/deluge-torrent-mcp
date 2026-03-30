@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Main gradient matching Deluge's blue palette -->
+    <linearGradient id="dropGrad" x1="0.3" y1="0" x2="0.7" y2="1">
+      <stop offset="0%" stop-color="#5DB8FF"/>
+      <stop offset="50%" stop-color="#2B7BD5"/>
+      <stop offset="100%" stop-color="#1A4F8C"/>
+    </linearGradient>
+    <!-- Highlight sheen -->
+    <radialGradient id="sheen" cx="0.35" cy="0.3" r="0.5" fx="0.35" fy="0.28">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Shadow under the drop -->
+    <radialGradient id="shadow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#0d2847" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#0d2847" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Water drop shape — classic Deluge silhouette -->
+  <path d="
+    M 256 52
+    C 256 52, 128 200, 128 310
+    C 128 381, 185 440, 256 440
+    C 327 440, 384 381, 384 310
+    C 384 200, 256 52, 256 52
+    Z
+  " fill="url(#dropGrad)" stroke="none"/>
+
+  <!-- Glossy highlight -->
+  <path d="
+    M 256 52
+    C 256 52, 128 200, 128 310
+    C 128 381, 185 440, 256 440
+    C 327 440, 384 381, 384 310
+    C 384 200, 256 52, 256 52
+    Z
+  " fill="url(#sheen)" stroke="none"/>
+
+  <!-- Torrent arrows / streaming data motif inside the drop -->
+  <g fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" opacity="0.92">
+    <!-- Down arrow 1 (left) -->
+    <line x1="212" y1="230" x2="212" y2="330"/>
+    <polyline points="186,304 212,330 238,304"/>
+
+    <!-- Up arrow (center) -->
+    <line x1="256" y1="340" x2="256" y2="240"/>
+    <polyline points="230,266 256,240 282,266"/>
+
+    <!-- Down arrow 2 (right) -->
+    <line x1="300" y1="230" x2="300" y2="330"/>
+    <polyline points="274,304 300,330 326,304"/>
+  </g>
+
+  <!-- Small MCP-style connection dots at the base of the drop -->
+  <g fill="#A0D4FF" opacity="0.8">
+    <circle cx="196" cy="400" r="8"/>
+    <circle cx="256" cy="414" r="8"/>
+    <circle cx="316" cy="400" r="8"/>
+  </g>
+  <g stroke="#A0D4FF" stroke-width="3" opacity="0.5">
+    <line x1="196" y1="400" x2="256" y2="414"/>
+    <line x1="256" y1="414" x2="316" y2="400"/>
+  </g>
+</svg>
