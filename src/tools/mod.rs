@@ -1,29 +1,37 @@
 // Copyright (c) 2026 Sandy McArthur, Jr.
 // SPDX-License-Identifier: MIT
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use rmcp::{
-    ServerHandler,
+    Peer, ServerHandler,
     handler::server::router::tool::ToolRouter,
     handler::server::tool::ToolCallContext,
     handler::server::wrapper::Parameters,
-    model::{CallToolRequestParams, CallToolResult, Icon, Implementation, ListToolsResult,
-            PaginatedRequestParams, ServerInfo, Tool},
+    model::{
+        CallToolRequestParams, CallToolResult, Icon, Implementation, ListResourcesResult,
+        ListResourceTemplatesResult, ListToolsResult, PaginatedRequestParams, RawResource,
+        RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult, Resource,
+        ResourceContents, ResourceTemplate, ResourceUpdatedNotificationParam, ServerInfo,
+        SubscribeRequestParams, Tool, UnsubscribeRequestParams,
+    },
     schemars,
     serde_json,
     service::RequestContext,
     tool, tool_router,
     ErrorData, RoleServer,
 };
+use tokio::sync::{broadcast::error::RecvError, RwLock};
+use tracing::{debug, warn};
 
 const ICON_SVG: &[u8] = include_bytes!("../../assets/deluge-mcp-icon.svg");
 const ICON_48: &[u8] = include_bytes!("../../assets/deluge-mcp-icon-48x48.png");
 const ICON_96: &[u8] = include_bytes!("../../assets/deluge-mcp-icon-96x96.png");
 use serde::Deserialize;
 
-use crate::deluge::DelugeClient;
+use crate::deluge::{DelugeClient, DelugeEvent};
 use crate::rencode::Value;
 
 // ---------------------------------------------------------------------------
@@ -35,6 +43,9 @@ pub struct DelugeServer {
     client: Arc<DelugeClient>,
     enabled_tools: std::collections::HashSet<String>,
     tool_router: ToolRouter<Self>,
+    /// Active resource subscriptions: resource URI → connected peer.
+    /// One subscriber per URI — last `subscribe` call wins.
+    subscribers: Arc<RwLock<HashMap<String, Peer<RoleServer>>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -598,10 +609,61 @@ impl DelugeServer {
         client: Arc<DelugeClient>,
         enabled_tools: std::collections::HashSet<String>,
     ) -> Self {
+        let subscribers: Arc<RwLock<HashMap<String, Peer<RoleServer>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        // Background task: forward Deluge push events to subscribed MCP peers.
+        let mut event_rx = client.subscribe_events();
+        let subs_for_task = subscribers.clone();
+        tokio::spawn(async move {
+            loop {
+                match event_rx.recv().await {
+                    Ok(event) => {
+                        let uris = event_to_resource_uris(&event);
+                        if uris.is_empty() {
+                            continue;
+                        }
+                        let mut failed_uris = Vec::new();
+                        {
+                            let subs = subs_for_task.read().await;
+                            for uri in &uris {
+                                if let Some(peer) = subs.get(uri) {
+                                    let param =
+                                        ResourceUpdatedNotificationParam::new(uri.clone());
+                                    if let Err(e) =
+                                        peer.notify_resource_updated(param).await
+                                    {
+                                        debug!(
+                                            "resource_updated notification failed for {uri}: {e}"
+                                        );
+                                        failed_uris.push(uri.clone());
+                                    }
+                                }
+                            }
+                        }
+                        if !failed_uris.is_empty() {
+                            let mut subs = subs_for_task.write().await;
+                            for uri in &failed_uris {
+                                subs.remove(uri);
+                            }
+                        }
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        warn!(
+                            "Resource event subscriber lagged by {n} events — \
+                             some resource_updated notifications may have been missed"
+                        );
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+
         Self {
             client,
             enabled_tools,
             tool_router: Self::tool_router(),
+            subscribers,
         }
     }
 
@@ -674,6 +736,25 @@ impl DelugeServer {
     }
 }
 
+/// Map a Deluge push event to the resource URIs that should be notified.
+fn event_to_resource_uris(event: &DelugeEvent) -> Vec<String> {
+    let torrent_uri = |hash: &str| format!("deluge://torrent/{hash}");
+    let with_list = |hash: &str| {
+        vec!["deluge://torrents".to_string(), torrent_uri(hash)]
+    };
+    match event {
+        DelugeEvent::TorrentAdded { info_hash, .. } => with_list(info_hash),
+        DelugeEvent::TorrentRemoved { info_hash } => with_list(info_hash),
+        DelugeEvent::TorrentStateChanged { info_hash, .. } => with_list(info_hash),
+        DelugeEvent::TorrentFinished { info_hash } => with_list(info_hash),
+        DelugeEvent::TorrentResumed { info_hash } => with_list(info_hash),
+        DelugeEvent::TorrentStorageMoved { info_hash, .. } => with_list(info_hash),
+        DelugeEvent::TorrentFileRenamed { info_hash, .. } => vec![torrent_uri(info_hash)],
+        DelugeEvent::TorrentFolderRenamed { info_hash, .. } => vec![torrent_uri(info_hash)],
+        DelugeEvent::Unknown { .. } => vec![],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ServerHandler
 // ---------------------------------------------------------------------------
@@ -691,7 +772,13 @@ impl ServerHandler for DelugeServer {
                 .with_mime_type("image/png")
                 .with_sizes(vec!["96x96".to_string()]),
         ];
-        ServerInfo::new(rmcp::model::ServerCapabilities::builder().enable_tools().build())
+        ServerInfo::new(
+            rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_resources_subscribe()
+                .build(),
+        )
             .with_server_info(
                 Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
                     .with_icons(icons),
@@ -722,5 +809,172 @@ impl ServerHandler for DelugeServer {
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
         self.tool_router.get(name).cloned()
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult {
+            resources: vec![Resource {
+                raw: RawResource {
+                    uri: "deluge://torrents".to_string(),
+                    name: "All Torrents".to_string(),
+                    title: Some("All Torrents".to_string()),
+                    description: Some(
+                        "Snapshot of all torrents with current status. \
+                         Subscribe for live updates when torrents are added, removed, \
+                         or change state."
+                            .to_string(),
+                    ),
+                    mime_type: Some("application/json".to_string()),
+                    size: None,
+                    icons: None,
+                    meta: None,
+                },
+                annotations: None,
+            }],
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        Ok(ListResourceTemplatesResult {
+            resource_templates: vec![ResourceTemplate {
+                raw: RawResourceTemplate {
+                    uri_template: "deluge://torrent/{info_hash}".to_string(),
+                    name: "Torrent Status".to_string(),
+                    title: Some("Torrent Status".to_string()),
+                    description: Some(
+                        "Complete status and metadata for a single torrent. \
+                         Subscribe for live updates on state changes, file renames, \
+                         and storage moves."
+                            .to_string(),
+                    ),
+                    mime_type: Some("application/json".to_string()),
+                    icons: None,
+                },
+                annotations: None,
+            }],
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        let uri = &request.uri;
+
+        if uri == "deluge://torrents" {
+            let result = self
+                .client
+                .call(
+                    "core.get_torrents_status",
+                    vec![
+                        Value::Dict(vec![]),
+                        Value::List(vec![
+                            Value::String("name".into()),
+                            Value::String("state".into()),
+                            Value::String("progress".into()),
+                            Value::String("total_size".into()),
+                            Value::String("download_payload_rate".into()),
+                            Value::String("upload_payload_rate".into()),
+                            Value::String("eta".into()),
+                            Value::String("save_path".into()),
+                        ]),
+                    ],
+                    vec![],
+                )
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let text = serde_json::to_string_pretty(&crate::rencode::value_to_json(result))
+                .unwrap_or_default();
+            Ok(ReadResourceResult::new(vec![
+                ResourceContents::TextResourceContents {
+                    uri: uri.clone(),
+                    mime_type: Some("application/json".to_string()),
+                    text,
+                    meta: None,
+                },
+            ]))
+        } else if let Some(hash) = uri.strip_prefix("deluge://torrent/") {
+            if let Err(e) = Self::validate_info_hash(hash) {
+                return Err(ErrorData::invalid_params(e, None));
+            }
+            let result = self
+                .client
+                .call(
+                    "core.get_torrent_status",
+                    vec![Value::String(hash.to_string()), Value::List(vec![])],
+                    vec![],
+                )
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let text = serde_json::to_string_pretty(&crate::rencode::value_to_json(result))
+                .unwrap_or_default();
+            Ok(ReadResourceResult::new(vec![
+                ResourceContents::TextResourceContents {
+                    uri: uri.clone(),
+                    mime_type: Some("application/json".to_string()),
+                    text,
+                    meta: None,
+                },
+            ]))
+        } else {
+            Err(ErrorData::resource_not_found(
+                format!("Unknown resource URI: {uri}"),
+                None,
+            ))
+        }
+    }
+
+    async fn subscribe(
+        &self,
+        request: SubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        let uri = &request.uri;
+        let valid = uri == "deluge://torrents"
+            || uri
+                .strip_prefix("deluge://torrent/")
+                .map(|hash| {
+                    (hash.len() == 40 || hash.len() == 64)
+                        && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+                .unwrap_or(false);
+        if !valid {
+            return Err(ErrorData::resource_not_found(
+                format!("Unknown resource URI: {uri}"),
+                None,
+            ));
+        }
+        self.subscribers
+            .write()
+            .await
+            .insert(uri.clone(), context.peer.clone());
+        debug!("Subscribed to resource {uri}");
+        Ok(())
+    }
+
+    async fn unsubscribe(
+        &self,
+        request: UnsubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        if self.subscribers.write().await.remove(&request.uri).is_some() {
+            debug!("Unsubscribed from resource {}", request.uri);
+        }
+        Ok(())
     }
 }
