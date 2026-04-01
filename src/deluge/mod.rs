@@ -17,7 +17,7 @@ use flate2::Compression;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::{oneshot, Mutex as AsyncMutex};
+use tokio::sync::{broadcast, oneshot, Mutex as AsyncMutex};
 use tokio_native_tls::TlsStream;
 use tracing::{debug, info, warn};
 
@@ -26,12 +26,28 @@ use crate::rencode::{self, Value};
 const PROTOCOL_VERSION: u8 = 1;
 const RPC_RESPONSE: i64 = 1;
 const RPC_ERROR: i64 = 2;
-// RPC_EVENT = 3 — server-initiated, ignored for now
+const RPC_EVENT: i64 = 3;
+
+const EVENT_CHANNEL_CAPACITY: usize = 64;
 
 const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024; // 32 MB compressed
 const MAX_DECOMPRESSED_BYTES: usize = MAX_FRAME_BYTES * 4; // 128 MB decompressed
 
 type PendingMap = Mutex<HashMap<i64, oneshot::Sender<Result<Value>>>>;
+
+/// A push event received from the Deluge daemon via the RPC_EVENT wire message.
+#[derive(Debug, Clone)]
+pub enum DelugeEvent {
+    TorrentAdded { info_hash: String, from_state: bool },
+    TorrentRemoved { info_hash: String },
+    TorrentStateChanged { info_hash: String, state: String },
+    TorrentFinished { info_hash: String },
+    TorrentResumed { info_hash: String },
+    TorrentStorageMoved { info_hash: String, path: String },
+    TorrentFileRenamed { info_hash: String, index: i64, name: String },
+    TorrentFolderRenamed { info_hash: String, old_name: String, new_name: String },
+    Unknown { name: String },
+}
 
 /// Active TLS connection state — writer half, pending response map, and generation counter.
 /// The generation is used by the read loop cleanup task to avoid nulling out a newer connection
@@ -54,6 +70,7 @@ pub struct DelugeClient {
     conn: Arc<AsyncMutex<Option<LiveConn>>>,
     next_id: AtomicI64,
     next_generation: AtomicU64,
+    event_tx: broadcast::Sender<DelugeEvent>,
 }
 
 impl DelugeClient {
@@ -68,6 +85,7 @@ impl DelugeClient {
         username: &str,
         password: &str,
     ) -> Result<(Arc<Self>, i64)> {
+        let (event_tx, _event_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let client = Arc::new(Self {
             host: host.to_string(),
             port,
@@ -77,6 +95,7 @@ impl DelugeClient {
             conn: Arc::new(AsyncMutex::new(None)),
             next_id: AtomicI64::new(1),
             next_generation: AtomicU64::new(1),
+            event_tx,
         });
 
         let (live_conn, auth_level) = client.try_connect_and_login().await?;
@@ -177,8 +196,9 @@ impl DelugeClient {
         // and mark the connection as dead so the next call() triggers reconnect.
         let conn_ref = self.conn.clone();
         let pending_for_loop = pending.clone();
+        let event_tx_for_loop = self.event_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = read_loop(reader, pending_for_loop.clone()).await {
+            if let Err(e) = read_loop(reader, pending_for_loop.clone(), event_tx_for_loop).await {
                 warn!("Deluge read loop terminated: {e}. Will reconnect on next request.");
             }
             for (_, tx) in pending_for_loop.lock().unwrap().drain() {
@@ -216,7 +236,41 @@ impl DelugeClient {
             other => bail!("unexpected login result: {other:?}"),
         };
 
+        // Register for push events so the daemon sends RPC_EVENT frames.
+        let event_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        if let Err(e) = send_call_direct(
+            &mut writer,
+            &pending,
+            event_id,
+            "daemon.set_event_interest",
+            vec![Value::List(vec![
+                Value::String("TorrentAddedEvent".into()),
+                Value::String("TorrentRemovedEvent".into()),
+                Value::String("TorrentStateChangedEvent".into()),
+                Value::String("TorrentFinishedEvent".into()),
+                Value::String("TorrentResumedEvent".into()),
+                Value::String("TorrentStorageMovedEvent".into()),
+                Value::String("TorrentFileRenamedEvent".into()),
+                Value::String("TorrentFolderRenamedEvent".into()),
+            ])],
+            vec![],
+        )
+        .await
+        {
+            warn!("Failed to register event interest with Deluge daemon: {e}");
+        } else {
+            debug!("Registered for Deluge push events");
+        }
+
         Ok((LiveConn { generation, writer, pending }, auth_level))
+    }
+
+    /// Subscribe to Deluge push events. The returned receiver yields every
+    /// [`DelugeEvent`] the daemon sends. Lagged receivers (more than
+    /// `EVENT_CHANNEL_CAPACITY` events behind) will receive a
+    /// `RecvError::Lagged` from the broadcast channel.
+    pub fn subscribe_events(&self) -> broadcast::Receiver<DelugeEvent> {
+        self.event_tx.subscribe()
     }
 
     /// Retry `try_connect_and_login` with exponential backoff.
@@ -301,6 +355,7 @@ async fn send_frame(
 async fn read_loop(
     mut reader: ReadHalf<TlsStream<TcpStream>>,
     pending: Arc<PendingMap>,
+    event_tx: broadcast::Sender<DelugeEvent>,
 ) -> Result<()> {
     let mut buf = BytesMut::new();
 
@@ -331,14 +386,18 @@ async fn read_loop(
             buf.advance(5);
             let body = buf.split_to(length);
 
-            if let Err(e) = dispatch_frame(&body, &pending) {
+            if let Err(e) = dispatch_frame(&body, &pending, &event_tx) {
                 warn!("error dispatching frame: {e}");
             }
         }
     }
 }
 
-fn dispatch_frame(body: &[u8], pending: &Arc<PendingMap>) -> Result<()> {
+fn dispatch_frame(
+    body: &[u8],
+    pending: &Arc<PendingMap>,
+    event_tx: &broadcast::Sender<DelugeEvent>,
+) -> Result<()> {
     let decompressed = zlib_decompress(body)?;
     let value = rencode::decode(&decompressed)?;
 
@@ -390,9 +449,23 @@ fn dispatch_frame(body: &[u8], pending: &Arc<PendingMap>) -> Result<()> {
             }
         }
 
+        RPC_EVENT => {
+            // [3, event_name, event_args]
+            let name = match items.get(1) {
+                Some(Value::String(s)) => s.clone(),
+                other => bail!("RPC_EVENT missing event name, got {other:?}"),
+            };
+            let args = match items.get(2) {
+                Some(Value::List(a)) => a.clone(),
+                _ => vec![],
+            };
+            let event = parse_event(&name, &args);
+            debug!("Received Deluge event: {event:?}");
+            let _ = event_tx.send(event); // ignore "no receivers" — it's fine
+        }
+
         other => {
-            // RPC_EVENT (3) or unknown — log and ignore
-            debug!("ignoring message type {other}");
+            debug!("ignoring unknown message type {other}");
         }
     }
 
@@ -438,6 +511,58 @@ fn enrich_deluge_error(exc_type: &str, exc_msg: &str) -> String {
     match hint {
         Some(h) => format!("{exc_type}: {exc_msg}\n[Hint: {h}]"),
         None => format!("{exc_type}: {exc_msg}"),
+    }
+}
+
+/// Decode a Deluge push event by name and positional args list into a typed [`DelugeEvent`].
+fn parse_event(name: &str, args: &[Value]) -> DelugeEvent {
+    let str_arg = |i: usize| -> String {
+        match args.get(i) {
+            Some(Value::String(s)) => s.clone(),
+            _ => String::new(),
+        }
+    };
+    let bool_arg = |i: usize| -> bool {
+        match args.get(i) {
+            Some(Value::Int(n)) => *n != 0,
+            Some(Value::Bool(b)) => *b,
+            _ => false,
+        }
+    };
+    let int_arg = |i: usize| -> i64 {
+        match args.get(i) {
+            Some(Value::Int(n)) => *n,
+            _ => 0,
+        }
+    };
+
+    match name {
+        "TorrentAddedEvent" => DelugeEvent::TorrentAdded {
+            info_hash: str_arg(0),
+            from_state: bool_arg(1),
+        },
+        "TorrentRemovedEvent" => DelugeEvent::TorrentRemoved { info_hash: str_arg(0) },
+        "TorrentStateChangedEvent" => DelugeEvent::TorrentStateChanged {
+            info_hash: str_arg(0),
+            state: str_arg(1),
+        },
+        "TorrentFinishedEvent" => DelugeEvent::TorrentFinished { info_hash: str_arg(0) },
+        "TorrentResumedEvent" => DelugeEvent::TorrentResumed { info_hash: str_arg(0) },
+        "TorrentStorageMovedEvent" => DelugeEvent::TorrentStorageMoved {
+            info_hash: str_arg(0),
+            path: str_arg(1),
+        },
+        "TorrentFileRenamedEvent" => DelugeEvent::TorrentFileRenamed {
+            info_hash: str_arg(0),
+            index: int_arg(1),
+            name: str_arg(2),
+        },
+        "TorrentFolderRenamedEvent" => DelugeEvent::TorrentFolderRenamed {
+            info_hash: str_arg(0),
+            old_name: str_arg(1),
+            new_name: str_arg(2),
+        },
+        _ => DelugeEvent::Unknown { name: name.to_string() },
     }
 }
 
