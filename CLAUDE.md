@@ -53,16 +53,16 @@ Deluge exposes a custom binary RPC protocol over TCP (default port 58846). The d
 | Tool | Deluge RPC Method | Description |
 |---|---|---|
 | `add_torrent` | `core.add_torrent_magnet` / `core.add_torrent_url` / `core.add_torrent_file` | Add a torrent by magnet link, .torrent URL, or .torrent file (via server file path or base64-encoded content) |
-| `remove_torrent` | `core.remove_torrent` | Remove a torrent, optionally deleting data |
+| `remove_torrent` | `core.remove_torrent` | Remove one or more torrents, optionally deleting data |
 | `list_torrents` | `core.get_torrents_status` | List all torrents with status fields |
-| `get_torrent_status` | `core.get_torrent_status` | Get detailed status for a single torrent |
-| `pause_torrent` | `core.pause_torrent` | Pause a torrent |
-| `resume_torrent` | `core.resume_torrent` | Resume a paused torrent |
-| `set_torrent_options` | `core.set_torrent_options` | Set per-torrent options (e.g. download path, ratio limits) |
-| `move_storage` | `core.move_storage` | Move a torrent's storage to a new path |
+| `get_torrent_status` | `core.get_torrent_status` / `core.get_torrents_status` | Get detailed status for one or more torrents |
+| `pause_torrent` | `core.pause_torrents` | Pause one or more torrents |
+| `resume_torrent` | `core.resume_torrents` | Resume one or more paused torrents |
+| `set_torrent_options` | `core.set_torrent_options` | Set options on one or more torrents (e.g. download path, ratio limits) |
+| `move_storage` | `core.move_storage` | Move one or more torrents' storage to a new path |
 | `rename_folder` | `core.rename_folder` | Rename a folder within a torrent |
 | `rename_files` | `core.rename_files` | Rename one or more files within a torrent |
-| `force_recheck` | `core.force_recheck` | Force a hash recheck of a torrent's files |
+| `force_recheck` | `core.force_recheck` | Force a hash recheck of one or more torrents' files |
 | `get_free_space` | `core.get_free_space` | Get free disk space for a given path |
 | `get_path_size` | `core.get_path_size` | Get the size of a path on the server |
 

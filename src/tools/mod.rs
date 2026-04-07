@@ -66,14 +66,16 @@ struct AddTorrentParams {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TorrentIdParams {
-    /// Target torrent info_hash.
-    info_hash: String,
+    /// Torrent info_hashes to operate on.
+    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")))]
+    info_hashes: Vec<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RemoveTorrentParams {
-    /// Target torrent info_hash.
-    info_hash: String,
+    /// Torrent info_hashes to remove.
+    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")))]
+    info_hashes: Vec<String>,
     /// If true, permanently deletes all downloaded files from disk — this is irreversible. If false (default), removes the torrent from Deluge but leaves files on disk. Always confirm with the user before setting to true.
     #[serde(default)]
     delete_data: bool,
@@ -82,8 +84,9 @@ struct RemoveTorrentParams {
 /// Speed values are in KiB/s; use -1 for unlimited. Omit fields you don't want to change.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct SetOptionsParams {
-    /// Target torrent info_hash.
-    info_hash: String,
+    /// Torrent info_hashes to set options on.
+    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")))]
+    info_hashes: Vec<String>,
     /// Max download speed in KiB/s (-1 = unlimited).
     max_download_speed: Option<f64>,
     /// Max upload speed in KiB/s (-1 = unlimited).
@@ -104,8 +107,9 @@ struct SetOptionsParams {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct MoveStorageParams {
-    /// Target torrent info_hash.
-    info_hash: String,
+    /// Torrent info_hashes to move.
+    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")))]
+    info_hashes: Vec<String>,
     /// Absolute destination directory path on the Deluge server. Deluge will attempt to create it if it does not exist. The Deluge process must have write access to this path.
     dest: String,
 }
@@ -113,6 +117,7 @@ struct MoveStorageParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RenameFolderParams {
     /// Target torrent info_hash.
+    #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$"))]
     info_hash: String,
     /// Current folder name within the torrent's file structure (as shown in the torrent file list, not a filesystem path).
     folder: String,
@@ -131,6 +136,7 @@ struct FileRename {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RenameFilesParams {
     /// Target torrent info_hash.
+    #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$"))]
     info_hash: String,
     /// File renames to apply (index + new_name pairs).
     renames: Vec<FileRename>,
@@ -258,7 +264,7 @@ impl DelugeServer {
             .map_err(Self::enrich_client_error)
     }
 
-    /// Remove a torrent from Deluge.
+    /// Remove one or more torrents from Deluge.
     /// If delete_data is true, all downloaded files are permanently deleted from disk — irreversible.
     /// If delete_data is false (default), files remain on disk and only the torrent entry is removed.
     #[tool(name = "deluge_remove_torrent", title = "Remove Torrent", annotations(destructive_hint = true, open_world_hint = false))]
@@ -267,19 +273,40 @@ impl DelugeServer {
         Parameters(p): Parameters<RemoveTorrentParams>,
     ) -> Result<String, String> {
         self.tool_gate("deluge_remove_torrent")?;
-        Self::validate_info_hash(&p.info_hash)?;
-        self.client
-            .call(
-                "core.remove_torrent",
-                vec![
-                    Value::String(p.info_hash.clone()),
-                    Value::Bool(p.delete_data),
-                ],
-                vec![],
-            )
-            .await
-            .map(|_| if p.delete_data { "deleted".to_string() } else { "ok".to_string() })
-            .map_err(Self::enrich_client_error)
+        Self::validate_info_hashes(&p.info_hashes)?;
+        let hashes = p.info_hashes;
+        let status_word = if p.delete_data { "deleted" } else { "ok" };
+        let mut results = serde_json::Map::new();
+        for hash in &hashes {
+            let result = self
+                .client
+                .call(
+                    "core.remove_torrent",
+                    vec![Value::String(hash.clone()), Value::Bool(p.delete_data)],
+                    vec![],
+                )
+                .await;
+            match result {
+                Ok(_) => {
+                    results.insert(hash.clone(), serde_json::json!(status_word));
+                }
+                Err(e) => {
+                    results.insert(
+                        hash.clone(),
+                        serde_json::json!({ "error": Self::enrich_client_error(e) }),
+                    );
+                }
+            }
+        }
+        if results.len() == 1 {
+            // Single torrent — return flat string for backward compat
+            let (_, v) = results.into_iter().next().unwrap();
+            if let Some(s) = v.as_str() {
+                return Ok(s.to_string());
+            }
+            return Err(v["error"].as_str().unwrap_or("unknown error").to_string());
+        }
+        Ok(serde_json::to_string_pretty(&serde_json::Value::Object(results)).unwrap_or_default())
     }
 
     /// List torrents in Deluge with their current status, with optional state filtering and pagination.
@@ -367,62 +394,85 @@ impl DelugeServer {
         Ok(serde_json::to_string_pretty(&serde_json::Value::Object(out)).unwrap_or_default())
     }
 
-    /// Get comprehensive status and metadata for a single torrent.
+    /// Get comprehensive status and metadata for one or more torrents.
     /// Use this when you need file details (names, zero-based indices, per-file progress) required
     /// for rename_files, tracker information, piece details, or fields not in list_torrents.
     /// Returns a JSON object with all available torrent fields including a 'files' array.
+    /// When multiple info_hashes are provided, returns an object keyed by info_hash.
     #[tool(name = "deluge_get_torrent_status", title = "Get Torrent Status", annotations(read_only_hint = true, open_world_hint = false))]
     async fn get_torrent_status(
         &self,
         Parameters(p): Parameters<TorrentIdParams>,
     ) -> Result<String, String> {
-        Self::validate_info_hash(&p.info_hash)?;
+        Self::validate_info_hashes(&p.info_hashes)?;
+        if p.info_hashes.len() == 1 {
+            // Single torrent — use singular RPC for flat response
+            return self
+                .client
+                .call(
+                    "core.get_torrent_status",
+                    vec![Value::String(p.info_hashes.into_iter().next().unwrap()), Value::List(vec![])],
+                    vec![],
+                )
+                .await
+                .map(Self::value_to_json_string)
+                .map_err(Self::enrich_client_error);
+        }
+        // Batch — use get_torrents_status with id filter
+        let filter = Value::Dict(vec![(
+            Value::String("id".into()),
+            Value::List(p.info_hashes.into_iter().map(Value::String).collect()),
+        )]);
         self.client
-            .call(
-                "core.get_torrent_status",
-                vec![Value::String(p.info_hash), Value::List(vec![])],
-                vec![],
-            )
+            .call("core.get_torrents_status", vec![filter, Value::List(vec![])], vec![])
             .await
             .map(Self::value_to_json_string)
             .map_err(Self::enrich_client_error)
     }
 
-    /// Pause a torrent, stopping all upload and download activity.
+    /// Pause one or more torrents, stopping all upload and download activity.
     #[tool(name = "deluge_pause_torrent", title = "Pause Torrent", annotations(destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
     async fn pause_torrent(
         &self,
         Parameters(p): Parameters<TorrentIdParams>,
     ) -> Result<String, String> {
-        Self::validate_info_hash(&p.info_hash)?;
+        Self::validate_info_hashes(&p.info_hashes)?;
         self.client
-            .call("core.pause_torrent", vec![Value::String(p.info_hash.clone())], vec![])
+            .call(
+                "core.pause_torrents",
+                vec![Value::List(p.info_hashes.into_iter().map(Value::String).collect())],
+                vec![],
+            )
             .await
             .map(|_| "ok".to_string())
             .map_err(Self::enrich_client_error)
     }
 
-    /// Resume a paused torrent. If auto-managed, may re-enter the queue rather than downloading immediately.
+    /// Resume one or more paused torrents. If auto-managed, may re-enter the queue rather than downloading immediately.
     #[tool(name = "deluge_resume_torrent", title = "Resume Torrent", annotations(destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
     async fn resume_torrent(
         &self,
         Parameters(p): Parameters<TorrentIdParams>,
     ) -> Result<String, String> {
-        Self::validate_info_hash(&p.info_hash)?;
+        Self::validate_info_hashes(&p.info_hashes)?;
         self.client
-            .call("core.resume_torrent", vec![Value::String(p.info_hash.clone())], vec![])
+            .call(
+                "core.resume_torrents",
+                vec![Value::List(p.info_hashes.into_iter().map(Value::String).collect())],
+                vec![],
+            )
             .await
             .map(|_| "ok".to_string())
             .map_err(Self::enrich_client_error)
     }
 
-    /// Set per-torrent options (speed limits, ratio targets, completion behavior). Takes effect immediately.
+    /// Set options on one or more torrents (speed limits, ratio targets, completion behavior). Takes effect immediately.
     #[tool(name = "deluge_set_torrent_options", title = "Set Torrent Options", annotations(destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
     async fn set_torrent_options(
         &self,
         Parameters(p): Parameters<SetOptionsParams>,
     ) -> Result<String, String> {
-        Self::validate_info_hash(&p.info_hash)?;
+        Self::validate_info_hashes(&p.info_hashes)?;
         let mut opts: Vec<(Value, Value)> = vec![];
         if let Some(v) = p.max_download_speed {
             opts.push((Value::String("max_download_speed".into()), Value::Float64(v)));
@@ -458,7 +508,7 @@ impl DelugeServer {
             .call(
                 "core.set_torrent_options",
                 vec![
-                    Value::List(vec![Value::String(p.info_hash.clone())]),
+                    Value::List(p.info_hashes.into_iter().map(Value::String).collect()),
                     Value::Dict(opts),
                 ],
                 vec![],
@@ -468,9 +518,9 @@ impl DelugeServer {
             .map_err(Self::enrich_client_error)
     }
 
-    /// Move a torrent's data files to a new directory on the Deluge server.
+    /// Move one or more torrents' data files to a new directory on the Deluge server.
     /// ASYNC: Returns immediately but the file move continues in the background.
-    /// The torrent enters Moving state during the operation and returns to its previous state when complete.
+    /// Torrents enter Moving state during the operation and return to their previous state when complete.
     /// Use list_torrents or get_torrent_status to confirm the move has finished (state leaves Moving).
     #[tool(name = "deluge_move_storage", title = "Move Storage", annotations(destructive_hint = false, open_world_hint = false))]
     async fn move_storage(
@@ -478,12 +528,12 @@ impl DelugeServer {
         Parameters(p): Parameters<MoveStorageParams>,
     ) -> Result<String, String> {
         self.tool_gate("deluge_move_storage")?;
-        Self::validate_info_hash(&p.info_hash)?;
+        Self::validate_info_hashes(&p.info_hashes)?;
         self.client
             .call(
                 "core.move_storage",
                 vec![
-                    Value::List(vec![Value::String(p.info_hash.clone())]),
+                    Value::List(p.info_hashes.into_iter().map(Value::String).collect()),
                     Value::String(p.dest.clone()),
                 ],
                 vec![],
@@ -553,7 +603,7 @@ impl DelugeServer {
             .map_err(Self::enrich_client_error)
     }
 
-    /// Force a full hash recheck of a torrent's files. Use after external moves, corruption suspicion, or renames.
+    /// Force a full hash recheck of one or more torrents' files. Use after external moves, corruption suspicion, or renames.
     /// ASYNC: Enters Checking state immediately; returns to previous state (including Paused) when done.
     #[tool(name = "deluge_force_recheck", title = "Force Recheck", annotations(destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
     async fn force_recheck(
@@ -561,11 +611,11 @@ impl DelugeServer {
         Parameters(p): Parameters<TorrentIdParams>,
     ) -> Result<String, String> {
         self.tool_gate("deluge_force_recheck")?;
-        Self::validate_info_hash(&p.info_hash)?;
+        Self::validate_info_hashes(&p.info_hashes)?;
         self.client
             .call(
                 "core.force_recheck",
-                vec![Value::List(vec![Value::String(p.info_hash.clone())])],
+                vec![Value::List(p.info_hashes.into_iter().map(Value::String).collect())],
                 vec![],
             )
             .await
@@ -678,6 +728,17 @@ impl DelugeServer {
                  server must be restarted with --enable-tool={tool_name} to allow this action.]"
             ))
         }
+    }
+
+    /// Validate that info_hashes is non-empty and each hash is well-formed.
+    fn validate_info_hashes(hashes: &[String]) -> Result<(), String> {
+        if hashes.is_empty() {
+            return Err("info_hashes must not be empty.".to_string());
+        }
+        for h in hashes {
+            Self::validate_info_hash(h)?;
+        }
+        Ok(())
     }
 
     /// Validate a torrent info hash — 40 hex chars (v1/SHA-1) or 64 hex chars (v2/SHA-256).
