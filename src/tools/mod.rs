@@ -67,14 +67,14 @@ struct AddTorrentParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TorrentIdParams {
     /// Torrent info_hashes to operate on.
-    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")))]
+    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$")))]
     info_hashes: Vec<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RemoveTorrentParams {
     /// Torrent info_hashes to remove.
-    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")))]
+    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$")))]
     info_hashes: Vec<String>,
     /// If true, permanently deletes all downloaded files from disk — this is irreversible. If false (default), removes the torrent from Deluge but leaves files on disk. Always confirm with the user before setting to true.
     #[serde(default)]
@@ -85,7 +85,7 @@ struct RemoveTorrentParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct SetOptionsParams {
     /// Torrent info_hashes to set options on.
-    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")))]
+    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$")))]
     info_hashes: Vec<String>,
     /// Max download speed in KiB/s (-1 = unlimited).
     max_download_speed: Option<f64>,
@@ -108,7 +108,7 @@ struct SetOptionsParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct MoveStorageParams {
     /// Torrent info_hashes to move.
-    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")))]
+    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$")))]
     info_hashes: Vec<String>,
     /// Absolute destination directory path on the Deluge server. Deluge will attempt to create it if it does not exist. The Deluge process must have write access to this path.
     dest: String,
@@ -117,7 +117,7 @@ struct MoveStorageParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RenameFolderParams {
     /// Target torrent info_hash.
-    #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$"))]
+    #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$"))]
     info_hash: String,
     /// Current folder name within the torrent's file structure (as shown in the torrent file list, not a filesystem path).
     folder: String,
@@ -136,7 +136,7 @@ struct FileRename {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RenameFilesParams {
     /// Target torrent info_hash.
-    #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$"))]
+    #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$"))]
     info_hash: String,
     /// File renames to apply (index + new_name pairs).
     renames: Vec<FileRename>,
@@ -741,13 +741,13 @@ impl DelugeServer {
         Ok(())
     }
 
-    /// Validate a torrent info hash — 40 hex chars (v1/SHA-1) or 64 hex chars (v2/SHA-256).
+    /// Validate a torrent info hash — 40 hex chars (SHA-1).
     fn validate_info_hash(hash: &str) -> Result<(), String> {
-        let valid_len = hash.len() == 40 || hash.len() == 64;
+        let valid_len = hash.len() == 40;
         let valid_hex = hash.bytes().all(|b| b.is_ascii_hexdigit());
         if !valid_len || !valid_hex {
             return Err(format!(
-                "invalid info_hash '{hash}': must be 40 hex characters (v1) or 64 hex characters (v2).\n\
+                "invalid info_hash '{hash}': must be 40 hex characters.\n\
                  [Hint: Do not guess or construct an info_hash. Use list_torrents to find the correct \
                  info_hash for the torrent you want to act on.]"
             ));

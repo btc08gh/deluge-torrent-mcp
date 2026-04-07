@@ -66,7 +66,7 @@ Deluge exposes a custom binary RPC protocol over TCP (default port 58846). The d
 | `get_free_space` | `core.get_free_space` | Get free disk space for a given path |
 | `get_path_size` | `core.get_path_size` | Get the size of a path on the server |
 
-Torrents are identified by their **info hash** (40-character hex string).
+Torrents are identified by their **info hash** (40-character hex string / SHA-1).
 
 ### Safety Gates
 
