@@ -22,6 +22,7 @@ Cargo for package management and build system
 | `flate2` | zlib compression/decompression for Deluge RPC message bodies |
 | `serde` | Serialization framework |
 | `base64` | Encode .torrent file content for `add_torrent_file` |
+| `bendy` | Bencode parser — validates base64 input is a .torrent file in `add_torrent` auto-detection |
 | `sha2` | SHA-256 hashing for TLS certificate fingerprint computation |
 | `anyhow` | Flexible error handling |
 | `thiserror` | Structured error types |
@@ -52,7 +53,7 @@ Deluge exposes a custom binary RPC protocol over TCP (default port 58846). The d
 
 | Tool | Deluge RPC Method | Description |
 |---|---|---|
-| `add_torrent` | `core.add_torrent_magnet` / `core.add_torrent_url` / `core.add_torrent_file` | Add a torrent by magnet link, .torrent URL, or .torrent file (via server file path or base64-encoded content) |
+| `add_torrent` | `core.add_torrent_magnet` / `core.add_torrent_url` / `core.add_torrent_file` | Add one or more torrents — source type (magnet, URL, base64 .torrent, file path) is auto-detected |
 | `remove_torrent` | `core.remove_torrent` | Remove one or more torrents, optionally deleting data |
 | `list_torrents` | `core.get_torrents_status` | List all torrents with status fields |
 | `get_torrent_status` | `core.get_torrent_status` / `core.get_torrents_status` | Get detailed status for one or more torrents |

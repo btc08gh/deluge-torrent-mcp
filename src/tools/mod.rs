@@ -54,46 +54,44 @@ pub struct DelugeServer {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct AddTorrentParams {
-    /// Magnet URI (must start with 'magnet:').
-    magnet_link: Option<String>,
-    /// HTTP/HTTPS URL to a .torrent file. Fetched asynchronously — returns before download completes.
-    url: Option<String>,
-    /// Absolute path to a .torrent file on the Deluge server's filesystem.
-    file_path: Option<String>,
-    /// Base64-encoded .torrent file contents.
-    file_content: Option<String>,
+    /// Torrent sources to add. Each entry is auto-detected: magnet: URIs, http/https URLs, base64-encoded .torrent file content, or absolute file paths on the Deluge server.
+    torrent_sources: Vec<String>,
 }
+
+/// 40-character hex SHA-1 torrent info hash. Use deluge_list_torrents to discover valid values.
+#[derive(Deserialize, schemars::JsonSchema)]
+struct InfoHash(
+    #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$"))]
+    String,
+);
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TorrentIdParams {
     /// Torrent info_hashes to operate on.
-    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$")))]
-    info_hashes: Vec<String>,
+    info_hashes: Vec<InfoHash>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RemoveTorrentParams {
     /// Torrent info_hashes to remove.
-    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$")))]
-    info_hashes: Vec<String>,
+    info_hashes: Vec<InfoHash>,
     /// If true, permanently deletes all downloaded files from disk — this is irreversible. If false (default), removes the torrent from Deluge but leaves files on disk. Always confirm with the user before setting to true.
     #[serde(default)]
     delete_data: bool,
 }
 
-/// Speed values are in KiB/s; use -1 for unlimited. Omit fields you don't want to change.
+/// Speed values are in KiB/s. Use -1 for unlimited on any numeric field. Omit fields you don't want to change.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct SetOptionsParams {
     /// Torrent info_hashes to set options on.
-    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$")))]
-    info_hashes: Vec<String>,
-    /// Max download speed in KiB/s (-1 = unlimited).
+    info_hashes: Vec<InfoHash>,
+    /// Max download speed in KiB/s.
     max_download_speed: Option<f64>,
-    /// Max upload speed in KiB/s (-1 = unlimited).
+    /// Max upload speed in KiB/s.
     max_upload_speed: Option<f64>,
-    /// Max simultaneous peer connections (-1 = unlimited).
+    /// Max simultaneous peer connections.
     max_connections: Option<i64>,
-    /// Seed ratio limit (e.g. 2.0 = 200%; -1 = unlimited).
+    /// Seed ratio limit (e.g. 2.0 = 200%).
     ratio_limit: Option<f64>,
     /// Remove torrent when ratio_limit is reached.
     remove_at_ratio: Option<bool>,
@@ -108,8 +106,7 @@ struct SetOptionsParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct MoveStorageParams {
     /// Torrent info_hashes to move.
-    #[schemars(inner(regex(pattern = r"^[0-9a-fA-F]{40}$")))]
-    info_hashes: Vec<String>,
+    info_hashes: Vec<InfoHash>,
     /// Absolute destination directory path on the Deluge server. Deluge will attempt to create it if it does not exist. The Deluge process must have write access to this path.
     dest: String,
 }
@@ -117,8 +114,7 @@ struct MoveStorageParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RenameFolderParams {
     /// Target torrent info_hash.
-    #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$"))]
-    info_hash: String,
+    info_hash: InfoHash,
     /// Current folder name within the torrent's file structure (as shown in the torrent file list, not a filesystem path).
     folder: String,
     /// New folder name. Should not contain path separators.
@@ -136,8 +132,7 @@ struct FileRename {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RenameFilesParams {
     /// Target torrent info_hash.
-    #[schemars(regex(pattern = r"^[0-9a-fA-F]{40}$"))]
-    info_hash: String,
+    info_hash: InfoHash,
     /// File renames to apply (index + new_name pairs).
     renames: Vec<FileRename>,
 }
@@ -177,96 +172,32 @@ struct PathParams {
 
 #[tool_router]
 impl DelugeServer {
-    /// Add a new torrent to Deluge by magnet link, .torrent URL, server file path, or base64 file content.
-    /// Provide EXACTLY ONE of: magnet_link, url, file_path, or file_content — not multiple.
-    /// Returns the info_hash of the newly added torrent on success.
-    /// When using url, Deluge fetches the .torrent file asynchronously; the call returns once the
-    /// fetch begins, not when it completes, and will return an error if the URL is unreachable.
+    /// Add one or more torrents to Deluge. Each source is auto-detected: magnet: URI, http/https URL,
+    /// base64-encoded .torrent file content, or absolute file path on the Deluge server.
+    /// Returns the info_hash of each added torrent. URL sources are fetched asynchronously by Deluge.
     #[tool(name = "deluge_add_torrent", title = "Add Torrent", annotations(destructive_hint = false, open_world_hint = true))]
     async fn add_torrent(
         &self,
         Parameters(p): Parameters<AddTorrentParams>,
     ) -> Result<String, String> {
-        let opts = Value::Dict(vec![]);
-
-        let result = if let Some(uri) = p.magnet_link {
-            if !uri.starts_with("magnet:") {
-                return Err("magnet_link must start with 'magnet:'".to_string());
+        if p.torrent_sources.is_empty() {
+            return Err("torrent_sources must not be empty.".to_string());
+        }
+        if p.torrent_sources.len() == 1 {
+            return self.add_single_torrent(&p.torrent_sources[0]).await;
+        }
+        // Batch — return ordered JSON array of results
+        let mut results = Vec::new();
+        for source in &p.torrent_sources {
+            match self.add_single_torrent(source).await {
+                Ok(hash) => results.push(serde_json::json!({"info_hash": hash})),
+                Err(e) => results.push(serde_json::json!({"error": e})),
             }
-            self.client
-                .call("core.add_torrent_magnet", vec![Value::String(uri), opts], vec![])
-                .await
-        } else if let Some(url) = p.url {
-            if !url.starts_with("http://") && !url.starts_with("https://") {
-                return Err("url must start with 'http://' or 'https://'".to_string());
-            }
-            self.client
-                .call("core.add_torrent_url", vec![Value::String(url), opts], vec![])
-                .await
-        } else if let Some(path) = p.file_path {
-            if std::path::Path::new(&path)
-                .components()
-                .any(|c| c == std::path::Component::ParentDir)
-            {
-                return Err("file_path must not contain '..' components".to_string());
-            }
-            let bytes = tokio::fs::read(&path)
-                .await
-                .map_err(|e| format!(
-                    "Failed to read file: {e}\n\
-                     [Hint: file_path must be an absolute path to a .torrent file on the \
-                     Deluge server's filesystem, not on the client machine.]"
-                ))?;
-            let encoded = BASE64.encode(&bytes);
-            let filename = std::path::Path::new(&path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("file.torrent")
-                .to_string();
-            self.client
-                .call(
-                    "core.add_torrent_file",
-                    vec![Value::String(filename), Value::String(encoded), opts],
-                    vec![],
-                )
-                .await
-        } else if let Some(content) = p.file_content {
-            const MAX_FILE_CONTENT_BYTES: usize = 32 * 1024 * 1024; // 32 MB
-            if content.len() > MAX_FILE_CONTENT_BYTES {
-                return Err(format!(
-                    "file_content is {} bytes, exceeding the 32 MB limit. \
-                     .torrent files are typically under 1 MB — this input is likely incorrect.",
-                    content.len()
-                ));
-            }
-            self.client
-                .call(
-                    "core.add_torrent_file",
-                    vec![
-                        Value::String("upload.torrent".to_string()),
-                        Value::String(content),
-                        opts,
-                    ],
-                    vec![],
-                )
-                .await
-        } else {
-            return Err(
-                "Provide one of: magnet_link, url, file_path, or file_content".to_string(),
-            );
-        };
-
-        result
-            .map(|v| match v {
-                Value::String(s) => s,
-                other => Self::value_to_string(other),
-            })
-            .map_err(Self::enrich_client_error)
+        }
+        Ok(serde_json::to_string_pretty(&serde_json::Value::Array(results)).unwrap_or_default())
     }
 
     /// Remove one or more torrents from Deluge.
-    /// If delete_data is true, all downloaded files are permanently deleted from disk — irreversible.
-    /// If delete_data is false (default), files remain on disk and only the torrent entry is removed.
     #[tool(name = "deluge_remove_torrent", title = "Remove Torrent", annotations(destructive_hint = true, open_world_hint = false))]
     async fn remove_torrent(
         &self,
@@ -282,17 +213,17 @@ impl DelugeServer {
                 .client
                 .call(
                     "core.remove_torrent",
-                    vec![Value::String(hash.clone()), Value::Bool(p.delete_data)],
+                    vec![Value::String(hash.0.clone()), Value::Bool(p.delete_data)],
                     vec![],
                 )
                 .await;
             match result {
                 Ok(_) => {
-                    results.insert(hash.clone(), serde_json::json!(status_word));
+                    results.insert(hash.0.clone(), serde_json::json!(status_word));
                 }
                 Err(e) => {
                     results.insert(
-                        hash.clone(),
+                        hash.0.clone(),
                         serde_json::json!({ "error": Self::enrich_client_error(e) }),
                     );
                 }
@@ -397,8 +328,7 @@ impl DelugeServer {
     /// Get comprehensive status and metadata for one or more torrents.
     /// Use this when you need file details (names, zero-based indices, per-file progress) required
     /// for rename_files, tracker information, piece details, or fields not in list_torrents.
-    /// Returns a JSON object with all available torrent fields including a 'files' array.
-    /// When multiple info_hashes are provided, returns an object keyed by info_hash.
+    /// Returns a JSON object keyed by info_hash with all available torrent fields including a 'files' array.
     #[tool(name = "deluge_get_torrent_status", title = "Get Torrent Status", annotations(read_only_hint = true, open_world_hint = false))]
     async fn get_torrent_status(
         &self,
@@ -406,22 +336,25 @@ impl DelugeServer {
     ) -> Result<String, String> {
         Self::validate_info_hashes(&p.info_hashes)?;
         if p.info_hashes.len() == 1 {
-            // Single torrent — use singular RPC for flat response
-            return self
+            let hash = p.info_hashes.into_iter().next().unwrap();
+            let result = self
                 .client
                 .call(
                     "core.get_torrent_status",
-                    vec![Value::String(p.info_hashes.into_iter().next().unwrap()), Value::List(vec![])],
+                    vec![Value::String(hash.0.clone()), Value::List(vec![])],
                     vec![],
                 )
                 .await
-                .map(Self::value_to_json_string)
-                .map_err(Self::enrich_client_error);
+                .map_err(Self::enrich_client_error)?;
+            let mut out = serde_json::Map::new();
+            out.insert(hash.0, crate::rencode::value_to_json(result));
+            return Ok(serde_json::to_string_pretty(&serde_json::Value::Object(out))
+                .unwrap_or_default());
         }
         // Batch — use get_torrents_status with id filter
         let filter = Value::Dict(vec![(
             Value::String("id".into()),
-            Value::List(p.info_hashes.into_iter().map(Value::String).collect()),
+            Value::List(p.info_hashes.into_iter().map(|h| Value::String(h.0)).collect()),
         )]);
         self.client
             .call("core.get_torrents_status", vec![filter, Value::List(vec![])], vec![])
@@ -440,7 +373,7 @@ impl DelugeServer {
         self.client
             .call(
                 "core.pause_torrents",
-                vec![Value::List(p.info_hashes.into_iter().map(Value::String).collect())],
+                vec![Value::List(p.info_hashes.into_iter().map(|h| Value::String(h.0)).collect())],
                 vec![],
             )
             .await
@@ -458,7 +391,7 @@ impl DelugeServer {
         self.client
             .call(
                 "core.resume_torrents",
-                vec![Value::List(p.info_hashes.into_iter().map(Value::String).collect())],
+                vec![Value::List(p.info_hashes.into_iter().map(|h| Value::String(h.0)).collect())],
                 vec![],
             )
             .await
@@ -502,13 +435,13 @@ impl DelugeServer {
             ));
         }
         if opts.is_empty() {
-            return Err("No options provided.".to_string());
+            return Err("No options provided. Set at least one option field (e.g. max_download_speed, ratio_limit).".to_string());
         }
         self.client
             .call(
                 "core.set_torrent_options",
                 vec![
-                    Value::List(p.info_hashes.into_iter().map(Value::String).collect()),
+                    Value::List(p.info_hashes.into_iter().map(|h| Value::String(h.0)).collect()),
                     Value::Dict(opts),
                 ],
                 vec![],
@@ -533,7 +466,7 @@ impl DelugeServer {
             .call(
                 "core.move_storage",
                 vec![
-                    Value::List(p.info_hashes.into_iter().map(Value::String).collect()),
+                    Value::List(p.info_hashes.into_iter().map(|h| Value::String(h.0)).collect()),
                     Value::String(p.dest.clone()),
                 ],
                 vec![],
@@ -554,14 +487,14 @@ impl DelugeServer {
         Parameters(p): Parameters<RenameFolderParams>,
     ) -> Result<String, String> {
         self.tool_gate("deluge_rename_folder")?;
-        Self::validate_info_hash(&p.info_hash)?;
+        Self::validate_info_hash(&p.info_hash.0)?;
         self.client
             .call(
                 "core.rename_folder",
                 vec![
-                    Value::String(p.info_hash.clone()),
-                    Value::String(p.folder.clone()),
-                    Value::String(p.new_name.clone()),
+                    Value::String(p.info_hash.0),
+                    Value::String(p.folder),
+                    Value::String(p.new_name),
                 ],
                 vec![],
             )
@@ -580,7 +513,7 @@ impl DelugeServer {
         Parameters(p): Parameters<RenameFilesParams>,
     ) -> Result<String, String> {
         self.tool_gate("deluge_rename_files")?;
-        Self::validate_info_hash(&p.info_hash)?;
+        Self::validate_info_hash(&p.info_hash.0)?;
         let renames = Value::List(
             p.renames
                 .iter()
@@ -595,7 +528,7 @@ impl DelugeServer {
         self.client
             .call(
                 "core.rename_files",
-                vec![Value::String(p.info_hash.clone()), renames],
+                vec![Value::String(p.info_hash.0), renames],
                 vec![],
             )
             .await
@@ -615,7 +548,7 @@ impl DelugeServer {
         self.client
             .call(
                 "core.force_recheck",
-                vec![Value::List(p.info_hashes.into_iter().map(Value::String).collect())],
+                vec![Value::List(p.info_hashes.into_iter().map(|h| Value::String(h.0)).collect())],
                 vec![],
             )
             .await
@@ -731,12 +664,12 @@ impl DelugeServer {
     }
 
     /// Validate that info_hashes is non-empty and each hash is well-formed.
-    fn validate_info_hashes(hashes: &[String]) -> Result<(), String> {
+    fn validate_info_hashes(hashes: &[InfoHash]) -> Result<(), String> {
         if hashes.is_empty() {
             return Err("info_hashes must not be empty.".to_string());
         }
         for h in hashes {
-            Self::validate_info_hash(h)?;
+            Self::validate_info_hash(&h.0)?;
         }
         Ok(())
     }
@@ -753,6 +686,117 @@ impl DelugeServer {
             ));
         }
         Ok(())
+    }
+
+    /// Auto-detect the source type and add a single torrent to Deluge.
+    /// Detection order: magnet: → http/https URL → base64 .torrent → server file path.
+    async fn add_single_torrent(&self, source: &str) -> Result<String, String> {
+        let opts = Value::Dict(vec![]);
+
+        let result = if source.starts_with("magnet:") {
+            self.client
+                .call(
+                    "core.add_torrent_magnet",
+                    vec![Value::String(source.to_string()), opts],
+                    vec![],
+                )
+                .await
+        } else if source.starts_with("http://") || source.starts_with("https://") {
+            self.client
+                .call(
+                    "core.add_torrent_url",
+                    vec![Value::String(source.to_string()), opts],
+                    vec![],
+                )
+                .await
+        } else if Self::is_base64_torrent(source) {
+            const MAX_BASE64_BYTES: usize = 32 * 1024 * 1024; // 32 MB
+            if source.len() > MAX_BASE64_BYTES {
+                return Err(format!(
+                    "base64 content is {} bytes, exceeding the 32 MB limit. \
+                     .torrent files are typically under 1 MB — this input is likely incorrect.",
+                    source.len()
+                ));
+            }
+            self.client
+                .call(
+                    "core.add_torrent_file",
+                    vec![
+                        Value::String("upload.torrent".to_string()),
+                        Value::String(source.to_string()),
+                        opts,
+                    ],
+                    vec![],
+                )
+                .await
+        } else if Self::looks_like_file_path(source) {
+            // Absolute file path on the Deluge server
+            if std::path::Path::new(source)
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
+            {
+                return Err("file path must not contain '..' components".to_string());
+            }
+            let bytes = tokio::fs::read(source).await.map_err(|e| {
+                format!(
+                    "Failed to read file: {e}\n\
+                     [Hint: file paths must be absolute paths to .torrent files on the \
+                     Deluge server's filesystem, not on the client machine.]"
+                )
+            })?;
+            let encoded = BASE64.encode(&bytes);
+            let filename = std::path::Path::new(source)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file.torrent")
+                .to_string();
+            self.client
+                .call(
+                    "core.add_torrent_file",
+                    vec![Value::String(filename), Value::String(encoded), opts],
+                    vec![],
+                )
+                .await
+        } else {
+            return Err(
+                "Unrecognized torrent source format. Each source must be one of: \
+                 a magnet: URI, an http/https URL, base64-encoded .torrent file content, \
+                 or an absolute file path on the Deluge server.\n\
+                 [Hint: Do not fabricate .torrent file content. Use a magnet link or URL instead.]"
+                    .to_string(),
+            );
+        };
+
+        result
+            .map(|v| match v {
+                Value::String(s) => s,
+                other => Self::value_to_string(other),
+            })
+            .map_err(Self::enrich_client_error)
+    }
+
+    /// Check if a string is base64-encoded bencode (i.e. a .torrent file).
+    fn is_base64_torrent(s: &str) -> bool {
+        let Ok(bytes) = BASE64.decode(s) else {
+            return false;
+        };
+        // Use Decoder directly — Value::from_bencode uses MAX_DEPTH=0 which rejects
+        // any nested structures. .torrent files nest up to ~3 levels (dict→info dict→files list).
+        let mut decoder = bendy::decoding::Decoder::new(&bytes).with_max_depth(100);
+        decoder.next_object().is_ok_and(|obj| obj.is_some())
+    }
+
+    /// Check if a string looks like an absolute file path.
+    fn looks_like_file_path(s: &str) -> bool {
+        // Unix absolute path
+        s.starts_with('/')
+            // Windows absolute path (e.g. C:\, D:/)
+            || (s.len() >= 3
+                && s.as_bytes()[0].is_ascii_alphabetic()
+                && s.as_bytes()[1] == b':'
+                && (s.as_bytes()[2] == b'\\' || s.as_bytes()[2] == b'/'))
+            // Windows UNC path (e.g. \\server\share)
+            || s.starts_with("\\\\")
     }
 
     /// Enrich transport-level errors (connection loss, send failure, reconnect timeout) with
@@ -1046,5 +1090,50 @@ impl ServerHandler for DelugeServer {
             debug!("Unsubscribed from resource {}", request.uri);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_base64_torrent_detects_valid_torrent() {
+        // Minimal valid .torrent: outer dict with announce + info dict containing pieces
+        let input = "ZDg6YW5ub3VuY2UzNTp1ZHA6Ly90cmFja2VyLm9wZW5iaXR0b3JyZW50LmNvbTo4MDEzOmNyZWF0aW9uIGRhdGVpMTMyNzA0OTgyN2U0OmluZm9kNjpsZW5ndGhpMjBlNDpuYW1lMTA6c2FtcGxlLnR4dDEyOnBpZWNlIGxlbmd0aGk2NTUzNmU2OnBpZWNlczIwOlzF5lK+DebyeAWzBGT/mwD0ifDJNzpwcml2YXRlaTFlZWU=";
+        assert!(DelugeServer::is_base64_torrent(input));
+    }
+
+    #[test]
+    fn is_base64_torrent_rejects_invalid_inputs() {
+        // Commas are not valid base64 characters (LLM hallucination case)
+        assert!(!DelugeServer::is_base64_torrent(
+            "CqyJwRCvvstNdevprj+KMltWj9C1jzBD,bTC2I2b2RP55"
+        ));
+        // Plain text (not base64)
+        assert!(!DelugeServer::is_base64_torrent("hello world"));
+        // Valid base64 but decodes to plain text, not bencode
+        assert!(!DelugeServer::is_base64_torrent("aGVsbG8gd29ybGQ="));
+        // File path
+        assert!(!DelugeServer::is_base64_torrent("/srv/torrents/file.torrent"));
+    }
+
+    #[test]
+    fn looks_like_file_path_detects_absolute_paths() {
+        // Unix
+        assert!(DelugeServer::looks_like_file_path("/srv/torrents/file.torrent"));
+        // Windows backslash
+        assert!(DelugeServer::looks_like_file_path("C:\\Users\\file.torrent"));
+        // Windows forward slash
+        assert!(DelugeServer::looks_like_file_path("C:/Users/file.torrent"));
+        // Windows UNC
+        assert!(DelugeServer::looks_like_file_path("\\\\server\\share\\file.torrent"));
+    }
+
+    #[test]
+    fn looks_like_file_path_rejects_non_paths() {
+        assert!(!DelugeServer::looks_like_file_path("magnet:?xt=urn:btih:abc"));
+        assert!(!DelugeServer::looks_like_file_path("aGVsbG8="));
+        assert!(!DelugeServer::looks_like_file_path("some random string"));
     }
 }
