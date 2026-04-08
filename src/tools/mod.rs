@@ -55,6 +55,7 @@ pub struct DelugeServer {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct AddTorrentParams {
     /// Torrent sources to add. Each entry is auto-detected: magnet: URIs, http/https URLs, base64-encoded .torrent file content, or absolute file paths on the Deluge server.
+    #[schemars(length(min = 1))]
     torrent_sources: Vec<String>,
 }
 
@@ -68,12 +69,14 @@ struct InfoHash(
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TorrentIdParams {
     /// Torrent info_hashes to operate on.
+    #[schemars(length(min = 1))]
     info_hashes: Vec<InfoHash>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RemoveTorrentParams {
     /// Torrent info_hashes to remove.
+    #[schemars(length(min = 1))]
     info_hashes: Vec<InfoHash>,
     /// If true, permanently deletes all downloaded files from disk — this is irreversible. If false (default), removes the torrent from Deluge but leaves files on disk. Always confirm with the user before setting to true.
     #[serde(default)]
@@ -84,6 +87,7 @@ struct RemoveTorrentParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct SetOptionsParams {
     /// Torrent info_hashes to set options on.
+    #[schemars(length(min = 1))]
     info_hashes: Vec<InfoHash>,
     /// Max download speed in KiB/s.
     max_download_speed: Option<f64>,
@@ -106,6 +110,7 @@ struct SetOptionsParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct MoveStorageParams {
     /// Torrent info_hashes to move.
+    #[schemars(length(min = 1))]
     info_hashes: Vec<InfoHash>,
     /// Absolute destination directory path on the Deluge server. Deluge will attempt to create it if it does not exist. The Deluge process must have write access to this path.
     dest: String,
@@ -124,7 +129,7 @@ struct RenameFolderParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct FileRename {
     /// Zero-based file index from get_torrent_status 'files' field.
-    index: i64,
+    index: u32,
     /// New name/path for the file (may include subdirectory components).
     new_name: String,
 }
@@ -246,7 +251,6 @@ impl DelugeServer {
     /// a 'torrents' object keyed by info_hash. Each torrent contains: name, state, progress (0–100),
     /// total_size (bytes), download_payload_rate (bytes/sec), upload_payload_rate (bytes/sec),
     /// eta (seconds to completion, -1 if not applicable), save_path.
-    /// Possible state values: Allocating, Checking, Downloading, Seeding, Paused, Queued, Error, Moving.
     /// If has_more is true, call again with offset=next_offset to retrieve the next page.
     #[tool(name = "deluge_list_torrents", title = "List Torrents", annotations(read_only_hint = true, open_world_hint = false))]
     async fn list_torrents(
@@ -519,7 +523,7 @@ impl DelugeServer {
                 .iter()
                 .map(|r| {
                     Value::List(vec![
-                        Value::Int(r.index),
+                        Value::Int(r.index as i64),
                         Value::String(r.new_name.clone()),
                     ])
                 })
