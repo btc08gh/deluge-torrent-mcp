@@ -101,7 +101,7 @@ struct SetOptionsParams {
     remove_at_ratio: Option<bool>,
     /// Move files to move_completed_path when download finishes.
     move_completed: Option<bool>,
-    /// Destination path when move_completed is true.
+    /// Destination path when move_completed is true. Has no effect unless move_completed is also true.
     move_completed_path: Option<String>,
     /// Download first and last pieces first (useful for media previews).
     prioritize_first_last_pieces: Option<bool>,
@@ -120,9 +120,9 @@ struct MoveStorageParams {
 struct RenameFolderParams {
     /// Target torrent info_hash.
     info_hash: InfoHash,
-    /// Current folder name within the torrent's file structure (as shown in the torrent file list, not a filesystem path).
+    /// Folder path prefix to rename, including the torrent root name and trailing slash (e.g. "MyTorrent/" or "MyTorrent/subfolder/").
     folder: String,
-    /// New folder name. Should not contain path separators.
+    /// Replacement folder path prefix. May include path separators. Deluge adds a trailing slash automatically.
     new_name: String,
 }
 
@@ -480,7 +480,7 @@ impl DelugeServer {
             .map_err(Self::enrich_client_error)
     }
 
-    /// Rename a top-level folder within a torrent's file structure.
+    /// Rename a folder within a torrent's file structure.
     /// ASYNC: The rename occurs asynchronously in Deluge.
     /// Best performed on paused torrents. The old folder may remain on disk as an orphan — Deluge
     /// renames the tracked path but does not always remove the original directory.
@@ -492,12 +492,26 @@ impl DelugeServer {
     ) -> Result<String, String> {
         self.tool_gate("deluge_rename_folder")?;
         Self::validate_info_hash(&p.info_hash.0)?;
+        if p.folder.is_empty() {
+            return Err(
+                "folder must not be empty.\n\
+                 [Hint: Include the torrent root name and trailing slash, \
+                 e.g. \"MyTorrent/\" or \"MyTorrent/subfolder/\".]"
+                    .to_string(),
+            );
+        }
+        // Ensure trailing slash — without it, "Foo" would match "FooBar/file.txt"
+        let folder = if p.folder.ends_with('/') {
+            p.folder
+        } else {
+            format!("{}/", p.folder)
+        };
         self.client
             .call(
                 "core.rename_folder",
                 vec![
                     Value::String(p.info_hash.0),
-                    Value::String(p.folder),
+                    Value::String(folder),
                     Value::String(p.new_name),
                 ],
                 vec![],
