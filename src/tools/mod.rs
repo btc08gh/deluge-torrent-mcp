@@ -136,8 +136,9 @@ struct FileRename {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RenameFilesParams {
-    /// Target torrent info_hash.
-    info_hash: InfoHash,
+    /// Exactly one torrent info_hash to rename files in.
+    #[schemars(length(min = 1, max = 1))]
+    info_hashes: Vec<InfoHash>,
     /// File renames to apply (index + new_name pairs).
     renames: Vec<FileRename>,
 }
@@ -531,7 +532,11 @@ impl DelugeServer {
         Parameters(p): Parameters<RenameFilesParams>,
     ) -> Result<String, String> {
         self.tool_gate("deluge_rename_files")?;
-        Self::validate_info_hash(&p.info_hash.0)?;
+        Self::validate_info_hashes(&p.info_hashes)?;
+        if p.info_hashes.len() != 1 {
+            return Err("rename_files operates on a single torrent. Provide exactly one info_hash.".to_string());
+        }
+        let hash = p.info_hashes.into_iter().next().unwrap();
         let renames = Value::List(
             p.renames
                 .iter()
@@ -546,7 +551,7 @@ impl DelugeServer {
         self.client
             .call(
                 "core.rename_files",
-                vec![Value::String(p.info_hash.0), renames],
+                vec![Value::String(hash.0), renames],
                 vec![],
             )
             .await
