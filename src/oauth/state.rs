@@ -61,6 +61,7 @@ pub struct RefreshInfo {
 /// Stores the validated parameters from a GET /authorize request while the
 /// consent page is displayed to the user. The nonce ties the POST back to
 /// this pending authorization.
+#[derive(Clone)]
 pub struct PendingAuth {
     pub client_id: String,
     pub redirect_uri: String,
@@ -141,6 +142,10 @@ impl OAuthState {
 
     pub async fn insert_pending_auth(&self, nonce: String, pending: PendingAuth) {
         self.pending_authorizations.lock().await.insert(nonce, pending);
+    }
+
+    pub async fn get_pending_auth(&self, nonce: &str) -> Option<PendingAuth> {
+        self.pending_authorizations.lock().await.get(nonce).cloned()
     }
 
     pub async fn take_pending_auth(&self, nonce: &str) -> Option<PendingAuth> {

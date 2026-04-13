@@ -7,7 +7,6 @@ use std::time::Instant;
 use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::Json;
 use serde::Deserialize;
 use tracing::{debug, trace, warn};
 
@@ -28,12 +27,32 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn error_json(status: StatusCode, error: &str, description: &str) -> Response {
-    (
-        status,
-        Json(serde_json::json!({ "error": error, "error_description": description })),
-    )
-        .into_response()
+fn error_html(status: StatusCode, title: &str, message: &str) -> Response {
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title} — Deluge Torrent MCP</title>
+  <style>
+    body {{ font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; display: flex; justify-content: center; padding-top: 80px; }}
+    .card {{ background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 32px; max-width: 420px; width: 100%; }}
+    h1 {{ margin-top: 0; font-size: 1.3em; color: #991b1b; }}
+    p {{ color: #555; line-height: 1.5; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>{title}</h1>
+    <p>{message}</p>
+  </div>
+</body>
+</html>"#,
+        title = html_escape(title),
+        message = html_escape(message),
+    );
+    (status, Html(html)).into_response()
 }
 
 fn redirect_error(redirect_uri: &str, error: &str, description: &str, state: Option<&str>) -> Response {
@@ -47,7 +66,15 @@ fn redirect_error(redirect_uri: &str, error: &str, description: &str, state: Opt
     Redirect::to(url.as_str()).into_response()
 }
 
-fn consent_page(client_name: &str, nonce: &str, requires_password: bool) -> String {
+fn consent_page(client_name: &str, nonce: &str, requires_password: bool, error_message: Option<&str>) -> String {
+    let error_banner = match error_message {
+        Some(msg) => format!(
+            r#"<div style="background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;padding:10px 14px;border-radius:4px;margin-bottom:16px;font-size:0.95em">{}</div>"#,
+            html_escape(msg)
+        ),
+        None => String::new(),
+    };
+
     let password_field = if requires_password {
         r#"<div style="margin-bottom:16px">
             <label for="password" style="display:block;margin-bottom:4px;font-weight:600">Access Code</label>
@@ -82,6 +109,7 @@ fn consent_page(client_name: &str, nonce: &str, requires_password: bool) -> Stri
 <body>
   <div class="card">
     <h1>Authorize Application</h1>
+    {error_banner}
     <p><span class="client-name">{client_name}</span> wants to access your Deluge Torrent MCP server.</p>
     <form method="POST" action="/authorize">
       <input type="hidden" name="nonce" value="{nonce}">
@@ -96,6 +124,7 @@ fn consent_page(client_name: &str, nonce: &str, requires_password: bool) -> Stri
 </html>"#,
         client_name = html_escape(client_name),
         nonce = html_escape(nonce),
+        error_banner = error_banner,
         password_field = password_field,
     )
 }
@@ -132,7 +161,7 @@ pub async fn handle_authorize_get(
         Some(ref id) if !id.is_empty() => id.clone(),
         _ => {
             trace!(ip = %ip, "Authorization request missing client_id");
-            return error_json(StatusCode::BAD_REQUEST, "invalid_request", "missing client_id");
+            return error_html(StatusCode::BAD_REQUEST, "Invalid Request", "The authorization request is missing a client_id parameter.");
         }
     };
 
@@ -140,7 +169,7 @@ pub async fn handle_authorize_get(
         Some(ref uri) if !uri.is_empty() => uri.clone(),
         _ => {
             trace!(ip = %ip, client_id = %client_id, "Authorization request missing redirect_uri");
-            return error_json(StatusCode::BAD_REQUEST, "invalid_request", "missing redirect_uri");
+            return error_html(StatusCode::BAD_REQUEST, "Invalid Request", "The authorization request is missing a redirect_uri parameter.");
         }
     };
 
@@ -154,15 +183,15 @@ pub async fn handle_authorize_get(
                 redirect_uri = %redirect_uri,
                 "Authorization request redirect_uri not in registered list"
             );
-            return error_json(
+            return error_html(
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "redirect_uri does not match any registered URI",
+                "Invalid Request",
+                "The redirect URI does not match any registered URI for this client.",
             );
         }
         None => {
             debug!(ip = %ip, client_id = %client_id, "Authorization request for unknown client");
-            return error_json(StatusCode::BAD_REQUEST, "invalid_request", "unknown client_id");
+            return error_html(StatusCode::BAD_REQUEST, "Unknown Client", "The client application is not registered with this server.");
         }
     };
 
@@ -224,7 +253,7 @@ pub async fn handle_authorize_get(
     );
 
     let display_name = client_name.as_deref().unwrap_or("An MCP client");
-    Html(consent_page(display_name, &nonce, state.api_token.is_some())).into_response()
+    Html(consent_page(display_name, &nonce, state.api_token.is_some(), None)).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -246,30 +275,34 @@ pub async fn handle_authorize_post(
 ) -> Response {
     let ip = extract_client_ip(&headers);
 
-    // Look up and consume the pending authorization
-    let pending = match state.take_pending_auth(&consent.nonce).await {
+    // Peek at the pending authorization without consuming it — wrong password
+    // attempts must leave it alive so the user can retry.
+    let pending = match state.get_pending_auth(&consent.nonce).await {
         Some(p) => p,
         None => {
             warn!(ip = %ip, "Consent POST with invalid or missing nonce");
-            return error_json(
+            return error_html(
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "invalid or expired authorization session",
+                "Session Not Found",
+                "Your authorization session is invalid or has expired. Please start the authorization flow again.",
             );
         }
     };
 
     if pending.expires_at <= Instant::now() {
+        // Clean up the expired entry
+        let _ = state.take_pending_auth(&consent.nonce).await;
         warn!(ip = %ip, client_id = %pending.client_id, "Consent session expired");
-        return error_json(
+        return error_html(
             StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "authorization session expired",
+            "Session Expired",
+            "Your authorization session has expired. Please start the authorization flow again.",
         );
     }
 
-    // If the user denied, redirect with error
+    // If the user denied, consume and redirect with error
     if consent.action != "allow" {
+        let _ = state.take_pending_auth(&consent.nonce).await;
         debug!(ip = %ip, client_id = %pending.client_id, "User denied authorization");
         return redirect_error(
             &pending.redirect_uri,
@@ -286,14 +319,20 @@ pub async fn handle_authorize_post(
         let matches: bool = provided.as_bytes().ct_eq(expected.as_bytes()).into();
         if !matches {
             warn!(ip = %ip, client_id = %pending.client_id, "Consent rejected: incorrect access code");
-            return redirect_error(
-                &pending.redirect_uri,
-                "access_denied",
-                "incorrect access code",
-                Some(&pending.state_param),
-            );
+            // Re-display the consent page with an error — nonce stays alive for retry
+            let client_name = state.get_client_name(&pending.client_id).await.flatten();
+            let display_name = client_name.as_deref().unwrap_or("An MCP client");
+            return Html(consent_page(
+                display_name,
+                &consent.nonce,
+                true,
+                Some("Incorrect access code. Please try again."),
+            )).into_response();
         }
     }
+
+    // Success — now consume the pending authorization
+    let _ = state.take_pending_auth(&consent.nonce).await;
 
     // User approved — generate authorization code
     let code = generate_random_hex(32);
