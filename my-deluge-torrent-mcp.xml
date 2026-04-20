@@ -14,7 +14,7 @@
   <Category>Network:Web:</Category>
   <WebUI>http://[IP]:[PORT:8080]/mcp</WebUI>
   <TemplateURL/>
-  <Icon>https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/deluge-icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/btc08gh/deluge-torrent-mcp/main/deluge.png</Icon>
   <ExtraParams/>
   <PostArgs>--transport http --http-bind 0.0.0.0:8080</PostArgs>
   <CPUset/>
