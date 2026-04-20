@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>deluge-torrent-mcp</Name>
+  <Repository>deluge-torrent-mcp:latest</Repository>
+  <Registry>https://github.com/yourrepo/deluge-torrent-mcp</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/yourrepo/deluge-torrent-mcp/issues</Support>
+  <Project>https://github.com/yourrepo/deluge-torrent-mcp</Project>
+  <ReadMe/>
+  <Overview>MCP server for Deluge. Connects to Deluge daemon and exposes torrent management tools via HTTP.</Overview>
+  <Category>Network:Web:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/mcp</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/deluge-icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs>--transport http --http-bind 0.0.0.0:8080</PostArgs>
+  <CPUset/>
+  <DateInstalled>1776637936</DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+
+  <Requires>This requires a docker image named deluge-torrent-mcp:latest.&#13;
+&#13;
+Build it from source:&#13;
+&#13;
+docker build -t deluge-torrent-mcp:latest .&#13;
+&#13;
+Example run:&#13;
+&#13;
+docker run -d \&#13;
+  --name deluge-torrent-mcp \&#13;
+  -p 8080:8080 \&#13;
+  -e DELUGE_HOST='192.168.1.100' \&#13;
+  -e DELUGE_PORT='58846' \&#13;
+  -e DELUGE_USERNAME='localclient' \&#13;
+  -e DELUGE_PASSWORD='password' \&#13;
+  -e DELUGE_API_TOKEN='YOUR_API_TOKEN' \&#13;
+  deluge-torrent-mcp:latest</Requires>
+
+  <Config Name="WebUI Port" Target="8080" Default="8080" Mode="tcp" Description="HTTP port for MCP endpoint" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+
+  <Config Name="Deluge Host" Target="DELUGE_HOST" Default="" Mode="" Description="Deluge daemon host (IP or hostname)" Type="Variable" Display="always" Required="true" Mask="false"></Config>
+
+  <Config Name="Deluge Port" Target="DELUGE_PORT" Default="58846" Mode="" Description="Deluge daemon port" Type="Variable" Display="always" Required="true" Mask="false">58846</Config>
+
+  <Config Name="Deluge Username" Target="DELUGE_USERNAME" Default="localclient" Mode="" Description="Deluge username" Type="Variable" Display="always" Required="true" Mask="false">localclient</Config>
+
+  <Config Name="Deluge Password" Target="DELUGE_PASSWORD" Default="" Mode="" Description="Deluge password" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+
+  <Config Name="MCP API Token" Target="DELUGE_API_TOKEN" Default="" Mode="" Description="Random token to protect MCP endpoint" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+
+  <Config Name="OAuth Issuer" Target="DELUGE_OAUTH_ISSUER" Default="" Mode="" Description="Optional OAuth issuer URL" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+
+  <TailscaleStateDir/>
+</Container>

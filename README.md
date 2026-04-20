@@ -172,6 +172,26 @@ Run `docker-compose up -d`, check `./test-config/auth` for the generated credent
 
 All tracing logs are directed to stderr. Do not print to stdout (`println!`), as MCP uses stdout for JSON-RPC framing. Any stray standard output will break the connection with the MCP client.
 
+
+
+## Building a Docker Container
+
+```bash
+docker build -t myanonamouse-mcp:latest .
+docker run -d \
+  --name myanonamouse-mcp \
+  -p 8080:8080 \
+  -e MAM_SESSION='<TOKEN GOES HERE>' \
+  -e MAM_API_TOKEN='<API TOKEN GOES HERE>' \
+  myanonamouse-mcp:latest
+```
+
+## Unraid Template
+
+- Download the `my-myanonamouse-mcp.xml` file and copy it to:
+  `/boot/config/plugins/dockerMan/templates-user/my-myanonamouse-mcp.xml`
+- Deploy docker container and select the `myanonamouse-mcp` template from the drop-down.
+
 ## License
 
 Copyright (c) 2026 Sandy McArthur, Jr.
