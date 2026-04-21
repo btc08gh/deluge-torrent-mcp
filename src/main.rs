@@ -30,6 +30,7 @@ const ALL_TOOLS: &[&str] = &[
     "deluge_rename_files",
     "deluge_force_recheck",
     "deluge_remove_torrent",
+    "deluge_set_torrent_label",
 ];
 
 /// Tools that are disabled unless explicitly enabled via --enable.

@@ -172,6 +172,17 @@ struct PathParams {
     path: String,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+struct SetTorrentLabelParams {
+    /// Torrent info_hashes to label.
+    #[schemars(length(min = 1))]
+    info_hashes: Vec<InfoHash>,
+    /// Label name to apply using the Deluge Label plugin.
+    label: String,
+    /// If true (default), create the label if it does not already exist.
+    create_if_missing: Option<bool>,
+}
+
 // ---------------------------------------------------------------------------
 // Tool implementations
 // ---------------------------------------------------------------------------
@@ -604,6 +615,59 @@ impl DelugeServer {
             })
             .map_err(Self::enrich_client_error)
     }
+    /// Set a label on one or more torrents using the Deluge Label plugin.
+    /// If create_if_missing is true (default), the label is created automatically when missing.
+    #[tool(name = "deluge_set_torrent_label", title = "Set Torrent Label", annotations(destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
+    async fn set_torrent_label(
+        &self,
+        Parameters(p): Parameters<SetTorrentLabelParams>,
+    ) -> Result<String, String> {
+        Self::validate_info_hashes(&p.info_hashes)?;
+        if p.label.trim().is_empty() {
+            return Err("label must not be empty.".to_string());
+        }
+
+        if !self.label_plugin_enabled().await? {
+            return Err(
+                "The Deluge Label plugin is not enabled.\n\
+                 [Hint: Enable the Label plugin in Deluge before using deluge_set_torrent_label.]"
+                    .to_string(),
+            );
+        }
+
+        let create_if_missing = p.create_if_missing.unwrap_or(true);
+        let mut created_label = false;
+        let mut results = serde_json::Map::new();
+
+        for hash in &p.info_hashes {
+            match self
+                .set_or_create_torrent_label(
+                    &hash.0,
+                    &p.label,
+                    create_if_missing,
+                    &mut created_label,
+                )
+                .await
+            {
+                Ok(status) => {
+                    results.insert(hash.0.clone(), serde_json::json!(status));
+                }
+                Err(e) => {
+                    results.insert(hash.0.clone(), serde_json::json!({ "error": e }));
+                }
+            }
+        }
+
+        if results.len() == 1 {
+            let (_, v) = results.into_iter().next().unwrap();
+            if let Some(s) = v.as_str() {
+                return Ok(s.to_string());
+            }
+            return Err(v["error"].as_str().unwrap_or("unknown error").to_string());
+        }
+
+        Ok(serde_json::to_string_pretty(&serde_json::Value::Object(results)).unwrap_or_default())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -823,6 +887,72 @@ impl DelugeServer {
                 && (s.as_bytes()[2] == b'\\' || s.as_bytes()[2] == b'/'))
             // Windows UNC path (e.g. \\server\share)
             || s.starts_with("\\\\")
+    }
+
+    async fn label_plugin_enabled(&self) -> Result<bool, String> {
+        let result = self
+            .client
+            .call("core.get_enabled_plugins", vec![], vec![])
+            .await
+            .map_err(Self::enrich_client_error)?;
+
+        match result {
+            Value::List(plugins) => Ok(plugins.iter().any(|p| match p {
+                Value::String(name) => name == "Label",
+                _ => false,
+            })),
+            other => Err(format!(
+                "Unexpected response from Deluge while checking enabled plugins: {}",
+                Self::value_to_string(other)
+            )),
+        }
+    }
+
+    async fn set_or_create_torrent_label(
+        &self,
+        info_hash: &str,
+        label: &str,
+        create_if_missing: bool,
+        created_label: &mut bool,
+    ) -> Result<&'static str, String> {
+        match self.try_set_torrent_label(info_hash, label).await {
+            Ok(()) => Ok("ok"),
+            Err(e) => {
+                if create_if_missing && Self::is_unknown_label_error(&e) {
+                    if !*created_label {
+                        self.client
+                            .call("label.add", vec![Value::String(label.to_string())], vec![])
+                            .await
+                            .map_err(Self::enrich_client_error)?;
+                        *created_label = true;
+                    }
+
+                    self.try_set_torrent_label(info_hash, label).await?;
+                    Ok("ok_created_label")
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    async fn try_set_torrent_label(&self, info_hash: &str, label: &str) -> Result<(), String> {
+        self.client
+            .call(
+                "label.set_torrent",
+                vec![
+                    Value::String(info_hash.to_string()),
+                    Value::String(label.to_string()),
+                ],
+                vec![],
+            )
+            .await
+            .map(|_| ())
+            .map_err(Self::enrich_client_error)
+    }
+
+    fn is_unknown_label_error(msg: &str) -> bool {
+        msg.contains("Unknown Label")
     }
 
     /// Enrich transport-level errors (connection loss, send failure, reconnect timeout) with
